@@ -51,6 +51,32 @@ RUN rosdep init || true && rosdep update
 RUN mkdir -p ${WS}/src ${WS}/build ${WS}/install ${WS}/log
 WORKDIR ${WS}
 
+# --- interactive shell niceties: colored prompt, ls/grep colors, ROS sourcing ---
+# Applied to /root/.bashrc so every `docker exec -it ... bash` gets colors
+# without needing a login shell.
+RUN cat >> /root/.bashrc <<'BASHRC'
+
+# --- doosan_isaac interactive shell setup ---
+export TERM=${TERM:-xterm-256color}
+export CLICOLOR=1
+export LS_COLORS="${LS_COLORS:-rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=30;41:tw=30;42:ow=34;42:st=37;44:ex=01;32}"
+alias ls='ls --color=auto'
+alias ll='ls -lah --color=auto'
+alias la='ls -a --color=auto'
+alias grep='grep --color=auto'
+alias egrep='egrep --color=auto'
+alias fgrep='fgrep --color=auto'
+PS1='\[\033[01;32m\]\u@\h\[\033[00m\]:\[\033[01;34m\]\w\[\033[00m\]\$ '
+
+# ROS 2 sourcing (safe to re-source)
+if [ -f /opt/ros/${ROS_DISTRO:-humble}/setup.bash ]; then
+  source /opt/ros/${ROS_DISTRO:-humble}/setup.bash
+fi
+if [ -f /ros2_ws/install/setup.bash ]; then
+  source /ros2_ws/install/setup.bash
+fi
+BASHRC
+
 # --- bootstrap + entrypoint scripts (external files, easier to debug than heredoc) ---
 COPY bootstrap_ws.sh /usr/local/bin/bootstrap_ws.sh
 COPY entrypoint.sh   /usr/local/bin/entrypoint.sh
