@@ -1,83 +1,108 @@
-# Doosan M1013 + Isaac Sim 4.5 + ROS 2 Humble + DRCF Emulator
+# Doosan M1013 + Isaac Sim 4.5 + ROS 2 Humble + MoveIt
 
-Single-container setup that lets a Doosan M1013 visualized in Isaac Sim 4.5
-mirror joint state coming from the Doosan DRCF emulator (or a real M1013) via
-ROS 2 Humble + the `doosan-robot2` driver stack.
+Single-container sim environment for a Doosan M1013 manipulator. MoveIt plans
+Cartesian / joint-space motions and Isaac Sim 4.5 renders the robot's PhysX
+articulation as it executes. The DRCF emulator is **not** used for motion —
+everything runs on `mock_components` + Isaac Sim, so there is no jerky amovej
+behavior and no second Docker container to manage.
 
-The same Dockerfile is built identically on a personal PC (with the emulator,
-for development) and on a lab PC (with the real robot). The only runtime
-differences are which `mode:=` and `host:=` you pass to the launch file.
+This repo is the sim environment only. The same `move_group` / ROS 2 control
+layer will be reused on a lab PC against a real M1013, with a small launch
+swap. See "Switching to real robot" below.
 
-## Architecture in one picture
+## Architecture
 
 ```
-┌────────────────────────┐     ┌────────────────────────┐
-│   DRCF emulator        │     │      Isaac Sim          │
-│   (virtual mode)       │     │      (PhysX + RTX)      │
-├────────────────────────┤     ├────────────────────────┤
-│ ✓ Motion planning      │     │ ✓ Rendering             │
-│ ✓ Trajectory (vel/acc) │     │ ✓ Environment physics   │
-│ ✓ Kinematics           │     │   (gravity / collision) │
-│ ✓ Robot state machine  │     │ ✓ Joint position drive  │
-│                        │     │ ✓ Sensors / perception  │
-└────────────┬───────────┘     └────────────▲───────────┘
-             │                              │
-             │ TCP 127.0.0.1:12345          │ Action Graph
-             │                              │   subscribes /joint_states
-             ▼                              │   drives articulation
-      dsr_hardware2  ─ publishes ───────────┘
-      (ROS 2 driver)   /dsr01/joint_states
+┌──────────────────────────────────────────────────────────────────┐
+│                      doosan_isaac container                      │
+│                                                                  │
+│  (CaP / test scripts call MoveIt — e.g. /move_action)            │
+│    │                                                             │
+│    ▼                                                             │
+│  move_group (MoveIt OMPL)                                        │
+│    │ IK + planning + time parameterization                       │
+│    │ FollowJointTrajectory action                                │
+│    ▼                                                             │
+│  dsr_moveit_controller (joint_trajectory_controller/JTC, 100 Hz) │
+│    │ position command interface                                  │
+│    ▼                                                             │
+│  mock_components/GenericSystem  ← hardware interface             │
+│    │ (echo command → state, instant tracking)                    │
+│    │ position state interface                                    │
+│    ▼                                                             │
+│  joint_state_broadcaster                                         │
+│    │                                                             │
+│    ▼                                                             │
+│  /joint_states (100 Hz)                                          │
+│    │                                                             │
+│    ├─► robot_state_publisher → /tf                               │
+│    │                                                             │
+│    └─► Isaac Sim OmniGraph                                       │
+│            │ ROS2SubscribeJointState                             │
+│            ▼                                                     │
+│         IsaacArticulationController                              │
+│            ▼                                                     │
+│         M1013 PhysX articulation in Isaac Sim viewport           │
+│         (+ gravity, collision, camera sensors — future work)     │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-- **DRCF emulator** is the official Doosan controller binary in a container.
-  In virtual mode, it simulates the motion trajectory internally.
-- **doosan-robot2** is Doosan's official ROS 2 driver. It talks to DRCF over
-  TCP using the same binary protocol as a real robot, so sim → real swap is
-  only a `mode:=` + `host:=` change.
-- **Isaac Sim** loads the official `m1013.usd` shipped with `dsr_description2`
-  and uses an OmniGraph `ROS2SubscribeJointState → IsaacArticulationController`
-  chain to drive the articulation from the live ROS 2 stream.
+Why this design:
+
+1. **`move_group` produces the same time-parameterized trajectory whether
+   the backend is sim or real** — it only looks at URDF + SRDF + joint_limits.
+   The planned trajectory is identical in both modes.
+2. **PhysX drives track commanded positions faithfully** — visual and
+   kinematic behavior matches the real robot closely enough for CaP-style
+   high-level validation (collision, reachability, sequence correctness).
+3. **Collision detection happens in MoveIt's `PlanningScene`** — environment
+   objects go there at plan time. Isaac Sim PhysX is the visual safety net.
+4. **Swap to real robot = one xacro / hardware interface change**. Launch
+   structure, MoveIt config, CaP code, controllers, action names — all stay
+   the same.
+
+Why DRCF emulator was dropped:
+
+Earlier revisions used the `doosanrobot/dsr_emulator:3.0.1` container plus
+`dsr_hardware2` as the sim backend. In virtual mode, `dsr_hw_interface2.cpp`
+calls `Drfl.amovej(...)` — a point-to-point motion primitive — for every
+`write()` tick. With `joint_trajectory_controller` feeding ~100 position
+setpoints per second, each `amovej` call restarts an accel/decel profile and
+interrupts the previous one. The result is visibly jerky motion that can be
+reproduced with upstream `dsr_bringup2_moveit.launch.py` too. DRCF emulator
+is a protocol / state machine harness, not a physics simulator.
 
 ## Repository layout
 
 ```
 doosan_docker_skeleton/
 ├── docker/
-│   ├── Dockerfile           # nvcr Isaac Sim 4.5 + ROS 2 Humble + apt deps
-│   ├── bootstrap_ws.sh      # first-run: clones pinned doosan-robot2 + colcon build
-│   ├── entrypoint.sh        # sources /opt/ros/humble + /ros2_ws/install
-│   ├── container.sh         # {start|enter|stop|clean} container manager
-│   ├── docker_build.sh      # standalone image build
-│   └── run_emulator.sh      # host-side DRCF emulator launcher
+│   ├── Dockerfile              # nvcr Isaac Sim 4.5 + ROS 2 Humble + MoveIt deps
+│   ├── bootstrap_ws.sh         # first-run: clone doosan-robot2 (humble @ pinned SHA) + colcon build
+│   ├── entrypoint.sh
+│   ├── container.sh            # {start|enter|stop|clean} container manager
+│   ├── docker_build.sh
+│   └── run_emulator.sh         # kept for protocol-level testing; NOT used by sim
 ├── isaac/
-│   └── m1013_ros2_bridge.py # Isaac Sim standalone app: USD load + ROS 2 graph
+│   └── m1013_ros2_bridge.py    # Isaac Sim standalone app: USD load + ROS 2 bridge graph
 ├── scripts/
-│   └── m1013_isaac_bringup.launch.py  # minimal doosan-robot2 launch, no rviz
-├── third_party/             # runtime-only, git-ignored (see below)
-│   └── doosan-robot2/       # ← cloned by bootstrap_ws.sh on first run
+│   ├── m1013_sim_bringup.launch.py      # MoveIt + mock_components, no DRCF
+│   ├── dsr_moveit_controller_sim.yaml   # JTC command_interfaces override (position only)
+│   ├── moveit_backend_smoketest.py      # joint-space goal test
+│   └── moveit_pose_test.py              # Cartesian pose goal test (CaP-like API)
+├── third_party/                 # runtime-only, git-ignored (bootstrap clones here)
 └── README.md
 ```
 
-Everything under `third_party/` and `docker/cache/` is **git-ignored** and
-regenerated on each fresh machine by `container.sh start`.
-
-## Prerequisites (host side, one-time)
+## Prerequisites (host, one-time)
 
 - Ubuntu 22.04
-- NVIDIA GPU + recent driver (tested on RTX 4060 + driver 580.x)
-- Docker Engine
-- **NVIDIA Container Toolkit** with the `nvidia` runtime registered
+- NVIDIA GPU + recent driver
+- Docker Engine + **NVIDIA Container Toolkit** (`docker info | grep -i runtime` must include `nvidia`)
+- `xhost +local:docker` (each session, or persist)
 
-Verify:
-
-```bash
-lsb_release -a                    # Ubuntu 22.04
-nvidia-smi                        # GPU visible
-docker info | grep -i runtime     # must include 'nvidia'
-df -h ~                           # at least ~30 GB free (Isaac Sim image is ~15 GB)
-```
-
-If the `nvidia` runtime is missing, install it once:
+If NVIDIA Container Toolkit is missing:
 
 ```bash
 curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
@@ -90,217 +115,194 @@ sudo nvidia-ctk runtime configure --runtime=docker && \
 sudo systemctl restart docker
 ```
 
-Allow containers to use the X display (once per session or persist as you
-like):
-
-```bash
-xhost +local:docker
-```
-
-## Setup (any machine, clean checkout)
+## Setup
 
 ```bash
 git clone https://github.com/GeunYoung-Heo/doosan_docker_skeleton.git
 cd doosan_docker_skeleton
 chmod +x docker/*.sh
-bash docker/container.sh start     # ~25–45 min on first run
+bash docker/container.sh start
 ```
 
-`container.sh start` is idempotent and does the following on first run:
+`container.sh start` is idempotent and on first run does the following (~25 minutes total):
 
 1. `docker build` → pulls `nvcr.io/nvidia/isaac-sim:4.5.0` (~15 GB), installs
-   ROS 2 Humble + `ros-humble-ros-base`, moveit core, ros2_control, and the
+   ROS 2 Humble + `ros-humble-ros-base` + moveit core + ros2_control + the
    Doosan runtime dependencies.
 2. Creates the `doosan_isaac` container (`--gpus all --network host --ipc host
-   --privileged`, X11 forwarding, Isaac Sim caches bind-mounted to
-   `docker/cache/isaac-*`).
+   --privileged`, X11 forwarding, Isaac Sim caches bind-mounted).
 3. Runs `bootstrap_ws.sh` inside the container, which:
-   - clones `doosan-robot2` (humble branch, pinned commit) into
-     `third_party/doosan-robot2/` on the host (via bind mount);
-   - `rosdep install` + `colcon build --symlink-install` over the 22
-     `dsr_*` packages;
-   - leaves the container running in the background (`tail -f /dev/null`).
+   - clones `doosan-robot2` (humble branch, pinned commit `ec9242546`) into
+     `third_party/doosan-robot2/`;
+   - `rosdep install` + `colcon build --symlink-install`;
+   - leaves the container running as a background idle process.
 
 Subsequent `container.sh start` calls just `docker start` the existing
-container. Pass `stop`, `enter`, or `clean` for the other verbs.
+container. Use `stop`, `enter`, and `clean` for the other verbs.
 
-## Run order (five terminals)
+## Run order
 
-All of the work beyond Terminal 1 happens inside the same `doosan_isaac`
-container — Terminals 2–5 are just independent shells into it via
-`docker exec -it doosan_isaac bash`.
+Three terminals (all open to the **same** `doosan_isaac` container via
+`docker exec -it`):
 
-### Terminal 1 — host: DRCF emulator
-
-```bash
-cd ~/doosan_docker_skeleton
-bash docker/run_emulator.sh            # default: m1013, port 12345
-ss -tlnp | grep 12345                  # LISTEN on 12345 = ok
-```
-
-The emulator is a separate Docker container (`doosanrobot/dsr_emulator:3.0.1`)
-running in `--network host` mode. Stop it with `docker rm -f emulator`.
-
-### Terminal 2 — container: Isaac Sim bridge
+### Terminal 1 — sim bringup (MoveIt + mock_components)
 
 ```bash
 docker exec -it doosan_isaac bash
-/isaac-sim/python.sh /workspace/isaac/m1013_ros2_bridge.py \
-    --topic dsr01/joint_states
+source /opt/ros/humble/setup.bash
+source /ros2_ws/install/setup.bash
+ros2 launch /ros2_ws/src/m1013_sim_bringup.launch.py
+```
+
+Wait until you see `You can start planning now!` — typically ~30 seconds
+after launch. At this point:
+
+- `/controller_manager` is active with `joint_state_broadcaster` +
+  `dsr_moveit_controller`;
+- `/joint_states` publishes at 100 Hz;
+- `/move_action` (MoveGroup action) is ready.
+
+### Terminal 2 — Isaac Sim viewport
+
+```bash
+docker exec -it doosan_isaac bash
+/isaac-sim/python.sh /workspace/isaac/m1013_ros2_bridge.py
 ```
 
 The script:
 
 1. Boots a standalone Isaac Sim 4.5 app with the RTX renderer.
 2. Enables the `isaacsim.ros2.bridge` extension.
-3. Loads the official `m1013.usd` from
-   `/ros2_ws/src/third_party/doosan-robot2/dsr_description2/usd/m1013.usd`.
-4. Patches the stage in memory: moves `ArticulationRootAPI` from the
-   `root_joint` fixed joint onto `base_link` so PhysX tensors can register a
-   valid articulation (the shipped USD applies the API to the wrong prim
-   type — see below).
-5. Builds an OmniGraph that wires
-   `OnPlaybackTick → ROS2SubscribeJointState → IsaacArticulationController`
-   and also publishes `/isaac_joint_states`, `/clock`, and a mirror of joint
-   state for debug.
-6. Enters the main simulation loop.
+3. Loads the official `m1013.usd` from `dsr_description2`.
+4. Moves the `ArticulationRootAPI` from the shipped `root_joint` fixed joint
+   onto `base_link` so PhysX tensors can register a valid articulation.
+5. Wires an OmniGraph `ROS2SubscribeJointState → IsaacArticulationController`
+   chain that mirrors `/joint_states` into the M1013 PhysX articulation.
+6. Auto-plays the timeline and enters the main loop.
 
-First run compiles RTX shaders and can take several minutes. A successful run
-prints:
+When the window appears, the robot may start at a non-home pose — it will
+converge to whatever `/joint_states` is currently reporting (mock_components
+remembers the last commanded state across bridge restarts).
 
-```
-[bridge] referencing USD: /ros2_ws/.../m1013.usd
-[bridge] removed ArticulationRootAPI from /World/m1013/m1013/root_joint
-[bridge] applied ArticulationRootAPI to /World/m1013/m1013/base_link
-[bridge] articulation robotPath: /World/m1013/m1013/base_link
-[bridge] graph ready. Subscribing to '/dsr01/joint_states', echoing on '/isaac_joint_states'
-[bridge] entering main loop. Ctrl-C to quit.
-```
+Headless alternative: add `--headless`.
 
-### Terminal 3 — container: doosan-robot2 driver
+### Terminal 3 — command / test
 
 ```bash
 docker exec -it doosan_isaac bash
 source /opt/ros/humble/setup.bash
 source /ros2_ws/install/setup.bash
-ros2 launch /ros2_ws/src/m1013_isaac_bringup.launch.py \
-    mode:=virtual host:=127.0.0.1 port:=12345 model:=m1013
 ```
 
-This is a minimal launch file that intentionally **excludes** rviz (Isaac Sim
-is our viewer) and runs only:
-
-- `ros2_control_node` (loads the `dsr_hardware2` system interface)
-- `robot_state_publisher`
-- `joint_state_broadcaster` spawner
-- `dsr_controller2` spawner
-
-A successful bringup ends with `Configured and activated dsr_controller2`. The
-`dsr_hardware2` log must say `mode : virtual` and `Emulator Mode` — if it says
-`Real Robot Control Mode`, the emulator silently rejects every motion and
-`get_current_posj` stays at zero.
-
-### Terminal 4 — container: joint state monitor
+#### Joint-space test
 
 ```bash
-docker exec -it doosan_isaac bash
-source /opt/ros/humble/setup.bash && source /ros2_ws/install/setup.bash
-ros2 topic echo /dsr01/joint_states --field position
+python3 /ros2_ws/src/moveit_backend_smoketest.py
 ```
 
-Positions are in radians. Expected rate is ~100 Hz.
+Sends a "go to all zeros" joint goal via `/move_action`.
 
-### Terminal 5 — container: send motion commands
+#### Cartesian pose test (the CaP-style interface)
 
 ```bash
-docker exec -it doosan_isaac bash
-source /opt/ros/humble/setup.bash && source /ros2_ws/install/setup.bash
-ros2 service call /dsr01/motion/move_home dsr_msgs2/srv/MoveHome "{target: 0}"
-ros2 service call /dsr01/motion/move_joint dsr_msgs2/srv/MoveJoint \
-    "{pos: [0.0, 0.0, 90.0, 0.0, 90.0, 0.0], vel: 30.0, acc: 30.0, time: 0.0, radius: 0.0, mode: 0, blend_type: 0, sync_type: 0}"
+# Default — tip at [0.45, 0, 0.55] with tip pointing down
+python3 /ros2_ws/src/moveit_pose_test.py
+
+# Custom target
+python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.4 0.3 0.4
+
+# Position only (MoveIt picks any orientation)
+python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.6 0.0 0.3 --position-only
+
+# Unreachable — should return PLANNING_FAILED
+python3 /ros2_ws/src/moveit_pose_test.py --xyz 1.5 0 0.5
 ```
 
-`move_joint` is blocking — it returns only when the trajectory has finished
-(~3 s for this example). While it runs, Terminal 4 should show positions
-interpolating from `[0, 0, 0, 0, 0, 0]` to `[0, 0, π/2, 0, π/2, 0]` (note the
-ROS joint-name order inside the topic is `[joint_1, joint_2, joint_4, joint_5,
-joint_3, joint_6]`, so entries 3 and 4 are the `joint_5` and `joint_3`
-values). Isaac Sim's M1013 follows in real time.
+Each successful call:
 
-## Switching to the real M1013 on the lab PC
+1. Sends a MoveGroup goal with PositionConstraint (+ optional OrientationConstraint);
+2. MoveIt solves IK + plans + executes;
+3. `/joint_states` transitions to the new configuration;
+4. Isaac Sim mirrors the motion in the viewport smoothly (no DRCF amovej jerk).
 
-The Docker image and all scripts are identical. Only the runtime arguments
-change.
+This is the same interface CaP will call. A higher-level wrapper would
+build `MoveGroup.Goal` objects via the helpers in `moveit_pose_test.py`'s
+`build_pose_goal()`.
 
-| Step | Personal PC (emulator) | Lab PC (real robot) |
-| ---- | ---------------------- | ------------------- |
-| Terminal 1 | `bash docker/run_emulator.sh` | *skip* — real robot is always on |
-| Terminal 3 `mode` | `virtual` | `real` |
-| Terminal 3 `host` | `127.0.0.1` | `<ROBOT_IP>` (ask the lab) |
-| Safety | — | Check workspace, reduce `vel`/`acc`, know the E-stop |
+## Verification
 
-Everything else — Terminals 2, 4, 5 and all scripts — is byte-for-byte
-identical.
+After following the run order once, the following should all hold:
 
-## How reproducibility works across machines
+- [ ] `ros2 control list_controllers --controller-manager /controller_manager`
+      shows `joint_state_broadcaster` + `dsr_moveit_controller` both `active`.
+- [ ] `ros2 action list | grep move_action` returns `/move_action`.
+- [ ] `ros2 topic hz /joint_states` shows ~100 Hz.
+- [ ] `moveit_backend_smoketest.py` returns `SUCCESS` and `/joint_states`
+      goes to `[0, 0, 0, 0, 0, 0]`.
+- [ ] `moveit_pose_test.py` returns `SUCCESS` for the default pose.
+- [ ] The Isaac Sim viewport shows the M1013 moving smoothly during each
+      motion (no jerky stop-start behavior).
 
-1. **Docker image**: base is the exact tag `nvcr.io/nvidia/isaac-sim:4.5.0`,
-   and all subsequent `apt` + `rosdep` steps run against pinned Ubuntu 22.04
-   and ROS 2 Humble package archives.
-2. **`doosan-robot2` source**: [bootstrap_ws.sh](docker/bootstrap_ws.sh) pins
-   commit `ec9242546ec6202835900dbcd8498e2daabfa6a6` on the `humble` branch
-   and `checkout`s it after cloning. Update this constant on purpose; never
-   implicitly.
-3. **M1013 USD**: comes from the pinned `doosan-robot2` clone above, so every
-   machine references the same geometry.
-4. **Isaac Sim API fix-up**: the `ArticulationRootAPI` move is applied at
-   runtime in [isaac/m1013_ros2_bridge.py](isaac/m1013_ros2_bridge.py), not
-   saved into the USD, so the upstream asset is left untouched.
+## Switching to a real M1013
 
-If all four of these are stable, both machines produce the same simulation
-behavior.
+Not implemented in this repo yet; outline only:
+
+1. Write a second launch file (e.g. `m1013_real_bringup.launch.py`) that:
+   - Builds `robot_description` from `dsr_description2`'s main xacro with
+     `mode:=real host:=<ROBOT_IP> port:=12345` — this xacro uses
+     `dsr_hardware2/DRHWInterface` as the ros2_control plugin.
+   - Loads `dsr_controller2.yaml` the same way `m1013_sim_bringup.launch.py` does.
+   - Still spawns `joint_state_broadcaster` + `dsr_moveit_controller`.
+   - Still launches `move_group` via the same `MoveItConfigsBuilder` call.
+2. Skip the Isaac Sim viewport (or run it in parallel as a digital twin if
+   desired).
+3. CaP scripts and `moveit_pose_test.py` work unchanged — the action name is
+   still `/move_action`.
+
+The key takeaway: everything above the hardware interface (MoveIt, controllers,
+topics, actions, scripts) is identical in sim and real. Only the ros2_control
+plugin + its URDF source changes.
 
 ## Troubleshooting
 
-- **`docker build` fails with `libfreetype6-dev` unmet dependency**: you added
-  `ros-humble-desktop` or full `ros-humble-moveit` back to the Dockerfile.
-  Don't. Isaac Sim is the viewer; rviz is unnecessary and its `libfreetype6-dev`
-  dependency conflicts with the `nvcr.io/nvidia/isaac-sim:4.5.0` base image.
-- **Isaac Sim window never appears**: run `xhost +local:docker` on the host
-  and recreate the container (`bash docker/container.sh clean && bash
-  docker/container.sh start`). Headless alternative: pass `--headless` to the
-  bridge script.
-- **`omni.physx.tensors.plugin: did not match any rigid bodies`**: the bridge
-  script's `ArticulationRootAPI` patch did not find `base_link` under the
-  USD's reference root. Check the `[bridge] === stage dump ===` output to see
-  the actual prim hierarchy and update the script's `base_link` path if the
-  USD layout changed.
-- **`/dsr01/joint_states` is stuck at all zeros and `move_*` returns
-  `success=True`**: you launched with `mode:=real` while pointed at the
-  emulator. Re-launch with `mode:=virtual`. In real mode DRCF expects an
-  actual robot encoder and silently rejects motions as "Too Close Target".
-- **Emulator container keeps printing `#TARGET MODE: Real Robot Control
-  Mode`**: same symptom as above; use `mode:=virtual` on Terminal 3 or
-  connect to a real robot.
-- **`ros2 control list_controllers` reports "waiting for service"**: the
-  controller manager is under the `dsr01` namespace — append
-  `--controller-manager /dsr01/controller_manager`.
-- **Isaac Sim viewport does not animate even though topics look fine**: check
-  that the timeline is playing (▶ button in the Isaac Sim UI or Spacebar in
-  the viewport). OmniGraph ROS 2 nodes only tick while the timeline is
-  playing.
+- **`docker build` fails on `libfreetype6-dev` unmet dependency** — a
+  `ros-humble-*` package pulled rviz/ogre. This Dockerfile intentionally
+  avoids `ros-humble-desktop` and the full `ros-humble-moveit` metapackage.
+  Isaac Sim is the viewer; rviz's `libfreetype6-dev` transitively conflicts
+  with the nvcr Isaac Sim base image.
+- **Isaac Sim window never appears** — run `xhost +local:docker` and recreate
+  the container with `bash docker/container.sh clean && bash docker/container.sh start`.
+  Headless alternative: pass `--headless` to the bridge.
+- **`omni.physx.tensors.plugin: did not match any rigid bodies`** — the
+  `ArticulationRootAPI` patch in the bridge did not find `base_link` under
+  the USD reference. Check the bridge's `[bridge] === stage dump ===`
+  output (uncomment the walk) and adjust the path if the USD layout changes.
+- **`dsr_moveit_controller` activates as `inactive` / "Failed to activate"** —
+  the JTC is trying to claim both `position` and `velocity` command
+  interfaces but `mock_components` only exposes `position`. Check that
+  `scripts/dsr_moveit_controller_sim.yaml` is in the `control_node`'s
+  `parameters=` list and is being loaded (you should see it in the param
+  file arguments of `ros2_control_node`).
+- **`move_action` goal returns `PLANNING_FAILED` / `NO_IK_SOLUTION`** — the
+  requested pose is outside M1013's workspace or in collision. Try a closer
+  xyz or pass `--position-only` to let MoveIt pick any orientation.
+- **Isaac Sim starts at a non-home pose** — `mock_components` remembers the
+  last commanded state across restarts of the Isaac Sim bridge (but not
+  across restarts of `m1013_sim_bringup.launch.py`, which resets to the USD
+  defaults). Send a home goal first:
+  `python3 /ros2_ws/src/moveit_backend_smoketest.py`.
 
-## What was verified
+## Reference — what's NOT used any more (legacy)
 
-On the development machine the following end-to-end path has been exercised
-successfully:
+This repo used to have a larger surface area exploring DRCF-backed sim and
+an Isaac Sim drag-to-command UI. Those files were removed once we confirmed
+that:
 
-1. `docker build` + `bootstrap_ws.sh` + `colcon build` (22 `dsr_*` packages).
-2. Isaac Sim 4.5 loads `m1013.usd`, OmniGraph wires subscribe + controller.
-3. `move_joint` / `move_home` service calls are accepted by the DRCF emulator
-   in `virtual` mode and the resulting trajectory is reflected in
-   `/dsr01/joint_states` at 100 Hz.
-4. Isaac Sim's M1013 mirrors the commanded trajectory in real time.
+- DRCF emulator (virtual mode) gives jerky motion via `amovej`, reproduced
+  with upstream Doosan launches too;
+- the drag UI was a test-time convenience and CaP will drive the robot via
+  API calls, not mouse drags.
 
-The lab PC replication via `git clone` + `container.sh start` is intended to
-reproduce exactly this path with no file editing.
+`docker/run_emulator.sh` is kept as a convenience for someone who wants to
+talk to a real DRCF binary for protocol-level testing. It is not wired into
+any launch in this repo.
