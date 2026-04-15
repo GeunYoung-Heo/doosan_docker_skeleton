@@ -1,0 +1,28 @@
+# Sim-mode overrides for dsr_moveit_controller.
+#
+# Why this exists:
+#   dsr_controller2.yaml only declares the controller type
+#   (`joint_trajectory_controller/JointTrajectoryController`) but not its
+#   command/state interface layout. The default joint_trajectory_controller
+#   configuration claims BOTH position and velocity command interfaces, but
+#   the sim-mode hardware interface (mock_components/GenericSystem via
+#   dsr_moveit_config_m1013/config/dsr.ros2_control.xacro) only exposes
+#   position as a command interface. The mismatch makes the controller fail
+#   to activate with "Failed to activate controller: dsr_moveit_controller".
+#
+# This file adds just the parameters needed so JTC claims only position.
+/**:
+  dsr_moveit_controller:
+    ros__parameters:
+      command_interfaces:
+        - position
+      state_interfaces:
+        - position
+        - velocity
+      joints:
+        - joint_1
+        - joint_2
+        - joint_3
+        - joint_4
+        - joint_5
+        - joint_6
