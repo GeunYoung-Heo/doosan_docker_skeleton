@@ -42,6 +42,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-${ROS_DISTRO}-moveit-planners-ompl \
         ros-${ROS_DISTRO}-moveit-simple-controller-manager \
         ros-${ROS_DISTRO}-moveit-ros-move-group \
+        ros-${ROS_DISTRO}-moveit-configs-utils \
  && rm -rf /var/lib/apt/lists/*
 
 # --- rosdep init ---
