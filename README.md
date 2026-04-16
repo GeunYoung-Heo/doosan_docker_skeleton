@@ -102,6 +102,45 @@ doosan_docker_skeleton/
 - Docker Engine + **NVIDIA Container Toolkit** (`docker info | grep -i runtime` must include `nvidia`)
 - `xhost +local:docker` (each session, or persist)
 
+### How to check prerequisites
+
+Run the following on the **host** (not inside a container) and verify each
+line matches the expected output:
+
+```bash
+# 1. OS — must be Ubuntu 22.04
+lsb_release -a 2>/dev/null | grep "Release"
+# Expected: Release:  22.04
+
+# 2. GPU + driver — must show an NVIDIA GPU
+nvidia-smi | head -5
+# Expected: NVIDIA-SMI XXX.XX.XX    Driver Version: XXX.XX.XX    CUDA Version: XX.X
+
+# 3. Docker Engine — must be installed and running
+docker --version
+# Expected: Docker version XX.X.X, ...
+
+# 4. NVIDIA Container Toolkit — 'nvidia' must appear in the runtime list
+docker info 2>/dev/null | grep -i "runtimes"
+# Expected: Runtimes: ... nvidia ...
+# If 'nvidia' is NOT listed → install the toolkit (see below)
+
+# 5. GPU passthrough into container — quick smoke test
+docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi 2>&1 | head -5
+# Expected: same GPU info as step 2 (proves GPU is accessible inside containers)
+
+# 6. Disk space — at least 30 GB free (Isaac Sim image ~15 GB + build ~10 GB)
+df -h ~ | tail -1
+# Expected: Avail column ≥ 30G
+
+# 7. X11 display forwarding (needed for Isaac Sim GUI)
+xhost +local:docker
+# Expected: non-SI:local:docker being added to access control list
+# (run this once per login session, or add to ~/.bashrc to persist)
+```
+
+If **step 4** fails (no `nvidia` runtime), install NVIDIA Container Toolkit:
+
 If NVIDIA Container Toolkit is missing:
 
 ```bash
@@ -284,9 +323,9 @@ python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.55
 ```bash
 # Terminal A: Doosan official launch (see above)
 # Terminal B:
-python3 trajectory_recorder.py -o real_traj.csv
+python3 /ros2_ws/src/trajectory_recorder.py -o real_traj.csv
 # Terminal C:
-python3 moveit_pose_test.py --xyz 0.45 0.0 0.55
+python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.55
 # Same goal, same recorder → real_traj.csv saved
 ```
 
