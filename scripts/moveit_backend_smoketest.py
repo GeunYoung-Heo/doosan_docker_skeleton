@@ -63,7 +63,7 @@ def main():
     rclpy.init()
     node = rclpy.create_node("moveit_smoketest")
 
-    action = "/dsr01/move_action"
+    action = "/move_action"
     client = ActionClient(node, MoveGroup, action)
     print(f"[smoketest] waiting for action server {action} ...", flush=True)
     if not client.wait_for_server(timeout_sec=15.0):

@@ -245,23 +245,59 @@ After following the run order once, the following should all hold:
 
 ## Switching to a real M1013
 
-Not implemented in this repo yet; outline only:
+**No custom real-robot launch is written.** Use Doosan's official upstream
+launch directly — it is already tested and safe:
 
-1. Write a second launch file (e.g. `m1013_real_bringup.launch.py`) that:
-   - Builds `robot_description` from `dsr_description2`'s main xacro with
-     `mode:=real host:=<ROBOT_IP> port:=12345` — this xacro uses
-     `dsr_hardware2/DRHWInterface` as the ros2_control plugin.
-   - Loads `dsr_controller2.yaml` the same way `m1013_sim_bringup.launch.py` does.
-   - Still spawns `joint_state_broadcaster` + `dsr_moveit_controller`.
-   - Still launches `move_group` via the same `MoveItConfigsBuilder` call.
-2. Skip the Isaac Sim viewport (or run it in parallel as a digital twin if
-   desired).
-3. CaP scripts and `moveit_pose_test.py` work unchanged — the action name is
-   still `/move_action`.
+```bash
+# On lab PC with the real M1013 connected:
+ros2 launch dsr_moveit_config_m1013 start.launch.py \
+    mode:=real host:=<ROBOT_IP> port:=12345 model:=m1013
+```
+
+This launches `dsr_hardware2` (servoj_rt streaming), `dsr_moveit_controller`
+(JTC), `dsr_controller2` (services), `move_group`, and `rviz2`. All official
+Doosan code. Our scripts (`moveit_pose_test.py`, `trajectory_recorder.py`) are
+read-only observers / action clients that work without modification.
 
 The key takeaway: everything above the hardware interface (MoveIt, controllers,
 topics, actions, scripts) is identical in sim and real. Only the ros2_control
-plugin + its URDF source changes.
+plugin + its URDF source changes — and that swap is handled entirely by which
+launch file you run.
+
+## Sim-to-real trajectory comparison
+
+To quantitatively verify that sim and real produce the same trajectories:
+
+### 1. Record in sim
+
+```bash
+# Terminal A: sim bringup already running
+# Terminal B: start recorder, then send a goal
+python3 /ros2_ws/src/trajectory_recorder.py -o sim_traj.csv
+# Terminal C:
+python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.55
+# Recorder auto-stops after motion idle → sim_traj.csv saved
+```
+
+### 2. Record on real robot (lab PC)
+
+```bash
+# Terminal A: Doosan official launch (see above)
+# Terminal B:
+python3 trajectory_recorder.py -o real_traj.csv
+# Terminal C:
+python3 moveit_pose_test.py --xyz 0.45 0.0 0.55
+# Same goal, same recorder → real_traj.csv saved
+```
+
+### 3. Compare
+
+```bash
+python3 trajectory_compare.py sim_traj.csv real_traj.csv --threshold-deg 2.0 --plot comparison.png
+```
+
+Output: per-joint max / mean / RMSE error in degrees, PASS/FAIL verdict,
+and a 12-panel overlay + error plot.
 
 ## Troubleshooting
 
