@@ -233,15 +233,24 @@ source /opt/ros/humble/setup.bash
 source /ros2_ws/install/setup.bash
 ```
 
-#### Joint-space test
+#### Joint-space goal (degrees — same convention as doosan `move_joint` service)
 
 ```bash
-python3 /ros2_ws/src/moveit_backend_smoketest.py
+# Move to specific joint angles (in degrees)
+python3 /ros2_ws/src/moveit_pose_test.py --joints 0 0 90 0 90 0
+
+# Another pose
+python3 /ros2_ws/src/moveit_pose_test.py --joints 30 -20 60 10 80 -15
+
+# Go home (all zeros)
+python3 /ros2_ws/src/moveit_pose_test.py --joints 0 0 0 0 0 0
 ```
 
-Sends a "go to all zeros" joint goal via `/move_action`.
+Values are in **degrees** — the script converts to radians internally and
+sends a MoveGroup joint-space goal via `/move_action`. This works in both
+sim mode and real mode (same command, different launch backend).
 
-#### Cartesian pose test (the CaP-style interface)
+#### Cartesian pose goal (the CaP-style interface)
 
 ```bash
 # Default — tip at [0.45, 0, 0.55] with tip pointing down
@@ -257,16 +266,17 @@ python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.6 0.0 0.3 --position-only
 python3 /ros2_ws/src/moveit_pose_test.py --xyz 1.5 0 0.5
 ```
 
-Each successful call:
+#### How it works
 
-1. Sends a MoveGroup goal with PositionConstraint (+ optional OrientationConstraint);
-2. MoveIt solves IK + plans + executes;
+Each successful call (joint or Cartesian):
+
+1. Sends a MoveGroup goal (JointConstraint or PositionConstraint) to `/move_action`;
+2. MoveIt plans + executes via `dsr_moveit_controller` (JTC);
 3. `/joint_states` transitions to the new configuration;
-4. Isaac Sim mirrors the motion in the viewport smoothly (no DRCF amovej jerk).
+4. Isaac Sim mirrors the motion in the viewport smoothly.
 
-This is the same interface CaP will call. A higher-level wrapper would
-build `MoveGroup.Goal` objects via the helpers in `moveit_pose_test.py`'s
-`build_pose_goal()`.
+This is the same interface CaP will use. `--joints` for joint-space control,
+`--xyz` for Cartesian IK control.
 
 ## Verification
 

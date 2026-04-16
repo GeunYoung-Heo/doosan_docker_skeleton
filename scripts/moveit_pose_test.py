@@ -1,27 +1,23 @@
 #!/usr/bin/env python3
-"""End-effector pose goal test via MoveIt.
-
-Sends a Cartesian pose goal to MoveIt's /move_action server. MoveIt solves IK
-and plans a collision-free trajectory. The trajectory is executed through
-dsr_moveit_controller → mock_components → /joint_states → Isaac Sim viewport.
-
-This is the same interface CaP will use when it wants to command the robot
-to a particular end-effector pose.
+"""MoveIt goal test — Cartesian pose or joint-space.
 
 Usage (inside the doosan_isaac container):
     source /opt/ros/humble/setup.bash
     source /ros2_ws/install/setup.bash
+
+    # Cartesian pose goal (default)
     python3 /ros2_ws/src/moveit_pose_test.py                    # default pose
     python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.5 0.0 0.6  # custom xyz
-    python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.4 0.2 0.5 --quat 0 1 0 0  # with orientation
-    python3 /ros2_ws/src/moveit_pose_test.py --position-only    # skip orientation constraint
+    python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.4 0.2 0.5 --quat 0 1 0 0
+    python3 /ros2_ws/src/moveit_pose_test.py --position-only
 
-Defaults (M1013 reachable, tip slightly forward and up):
-    xyz  = (0.45, 0.0, 0.55) in base_link frame
-    quat = (0, 1, 0, 0) = 180° around Y (tip pointing down)
+    # Joint-space goal (degrees — same convention as doosan move_joint service)
+    python3 /ros2_ws/src/moveit_pose_test.py --joints 0 0 90 0 90 0
+    python3 /ros2_ws/src/moveit_pose_test.py --joints 30 -20 60 10 80 -15
 """
 
 import argparse
+import math
 import sys
 import time
 
@@ -32,6 +28,7 @@ from geometry_msgs.msg import Point, Pose, Quaternion, Vector3
 from moveit_msgs.action import MoveGroup
 from moveit_msgs.msg import (
     Constraints,
+    JointConstraint,
     MotionPlanRequest,
     OrientationConstraint,
     PlanningOptions,
@@ -46,6 +43,7 @@ DEFAULT_QUAT = (0.0, 1.0, 0.0, 0.0)  # 180° around Y: tip down
 PLANNING_FRAME = "base_link"
 TIP_LINK = "link_6"
 GROUP = "manipulator"
+JOINT_NAMES = ["joint_1", "joint_2", "joint_3", "joint_4", "joint_5", "joint_6"]
 
 
 def build_pose_goal(xyz, quat, position_only, position_tol, orient_tol):
@@ -105,8 +103,50 @@ def build_pose_goal(xyz, quat, position_only, position_tol, orient_tol):
     return goal
 
 
+def build_joint_goal(joint_degrees):
+    """Build a MoveGroup.Goal for a joint-space target.
+
+    joint_degrees: list of 6 floats in DEGREES (same convention as doosan
+    move_joint service). Converted to radians internally.
+    """
+    goal = MoveGroup.Goal()
+    req = MotionPlanRequest()
+    req.group_name = GROUP
+    req.num_planning_attempts = 10
+    req.allowed_planning_time = 5.0
+    req.max_velocity_scaling_factor = 0.3
+    req.max_acceleration_scaling_factor = 0.3
+    req.pipeline_id = "ompl"
+
+    ws = WorkspaceParameters()
+    ws.header.frame_id = PLANNING_FRAME
+    ws.min_corner.x, ws.min_corner.y, ws.min_corner.z = -1.5, -1.5, -0.5
+    ws.max_corner.x, ws.max_corner.y, ws.max_corner.z = 1.5, 1.5, 1.5
+    req.workspace_parameters = ws
+
+    c = Constraints()
+    c.name = "joint_goal"
+    for name, deg in zip(JOINT_NAMES, joint_degrees):
+        jc = JointConstraint()
+        jc.joint_name = name
+        jc.position = math.radians(float(deg))
+        jc.tolerance_above = 0.001
+        jc.tolerance_below = 0.001
+        jc.weight = 1.0
+        c.joint_constraints.append(jc)
+    req.goal_constraints.append(c)
+
+    goal.request = req
+    goal.planning_options = PlanningOptions()
+    goal.planning_options.plan_only = False
+    return goal
+
+
 def main():
     parser = argparse.ArgumentParser()
+    parser.add_argument("--joints", type=float, nargs=6, default=None,
+                        metavar=("J1", "J2", "J3", "J4", "J5", "J6"),
+                        help="Joint-space target in DEGREES (e.g. --joints 0 0 90 0 90 0)")
     parser.add_argument("--xyz", type=float, nargs=3, default=list(DEFAULT_XYZ),
                         metavar=("X", "Y", "Z"),
                         help=f"Target position in {PLANNING_FRAME} frame [m]")
@@ -123,53 +163,61 @@ def main():
                         help="MoveGroup action server name")
     args = parser.parse_args()
 
-    print(f"[pose_test] target xyz={args.xyz}", flush=True)
-    if args.position_only:
-        print(f"[pose_test] orientation: FREE (position only)", flush=True)
+    is_joint_goal = args.joints is not None
+
+    if is_joint_goal:
+        print(f"[moveit_test] joint goal (deg): {args.joints}", flush=True)
     else:
-        print(f"[pose_test] target quat={args.quat}", flush=True)
-    print(f"[pose_test] frame={PLANNING_FRAME}, tip={TIP_LINK}, group={GROUP}", flush=True)
+        print(f"[moveit_test] pose goal xyz={args.xyz}", flush=True)
+        if args.position_only:
+            print(f"[moveit_test] orientation: FREE", flush=True)
+        else:
+            print(f"[moveit_test] quat={args.quat}", flush=True)
+    print(f"[moveit_test] group={GROUP}, action={args.action}", flush=True)
 
     rclpy.init()
-    node = rclpy.create_node("moveit_pose_test")
+    node = rclpy.create_node("moveit_test")
     client = ActionClient(node, MoveGroup, args.action)
 
-    print(f"[pose_test] waiting for {args.action} ...", flush=True)
+    print(f"[moveit_test] waiting for {args.action} ...", flush=True)
     if not client.wait_for_server(timeout_sec=15.0):
-        print(f"[pose_test] FAIL: action server {args.action} not available")
+        print(f"[moveit_test] FAIL: action server {args.action} not available")
         rclpy.shutdown()
         return 2
 
-    goal = build_pose_goal(
-        args.xyz, args.quat, args.position_only,
-        args.position_tol, args.orient_tol,
-    )
+    if is_joint_goal:
+        goal = build_joint_goal(args.joints)
+    else:
+        goal = build_pose_goal(
+            args.xyz, args.quat, args.position_only,
+            args.position_tol, args.orient_tol,
+        )
 
-    print("[pose_test] sending goal ...", flush=True)
+    print("[moveit_test] sending goal ...", flush=True)
     t0 = time.time()
     sf = client.send_goal_async(goal)
     rclpy.spin_until_future_complete(node, sf, timeout_sec=10.0)
     gh = sf.result()
     if gh is None or not gh.accepted:
-        print(f"[pose_test] FAIL: goal rejected (gh={gh})")
+        print(f"[moveit_test] FAIL: goal rejected (gh={gh})")
         rclpy.shutdown()
         return 3
 
-    print("[pose_test] goal accepted, planning + executing ...", flush=True)
+    print("[moveit_test] goal accepted, planning + executing ...", flush=True)
     rf = gh.get_result_async()
     rclpy.spin_until_future_complete(node, rf, timeout_sec=60.0)
     res = rf.result()
     total = time.time() - t0
 
     if res is None:
-        print(f"[pose_test] FAIL: no result within 60s (total={total:.2f}s)")
+        print(f"[moveit_test] FAIL: no result within 60s (total={total:.2f}s)")
         rclpy.shutdown()
         return 4
 
     code = res.result.error_code.val
     # moveit_msgs.msg.MoveItErrorCodes.SUCCESS = 1
     if code == 1:
-        print(f"[pose_test] SUCCESS — total time {total:.2f}s", flush=True)
+        print(f"[moveit_test] SUCCESS — total time {total:.2f}s", flush=True)
         rc = 0
     else:
         code_names = {
@@ -189,7 +237,7 @@ def main():
             -31: "NO_IK_SOLUTION",
         }
         name = code_names.get(code, f"code={code}")
-        print(f"[pose_test] FAILED: {name} (total={total:.2f}s)")
+        print(f"[moveit_test] FAILED: {name} (total={total:.2f}s)")
         rc = 5
 
     rclpy.shutdown()
