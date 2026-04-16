@@ -299,13 +299,43 @@ python3 trajectory_compare.py sim_traj.csv real_traj.csv --threshold-deg 2.0 --p
 Output: per-joint max / mean / RMSE error in degrees, PASS/FAIL verdict,
 and a 12-panel overlay + error plot.
 
+## Why rviz2 is not installed (and what we do instead)
+
+`ros-humble-rviz2` depends on `ros-humble-rviz-ogre-vendor`, which
+transitively requires `libfreetype6-dev`. The `nvcr.io/nvidia/isaac-sim:4.5.0`
+base image holds `libfreetype6` at a version that conflicts with the `-dev`
+package, so `apt install ros-humble-rviz2` fails with "unmet dependencies".
+This also blocks `ros-humble-desktop` and the full `ros-humble-moveit`
+metapackage.
+
+**Isaac Sim replaces rviz** for 3D visualization and robot state rendering in
+this container. Everything that rviz would show (robot model, TF tree, planned
+trajectories, joint state) is available through Isaac Sim's OmniGraph ROS 2
+bridge.
+
+**However**, Doosan's official launch files (e.g.
+`dsr_moveit_config_m1013/launch/start.launch.py`) unconditionally spawn
+`Node(package="rviz2")` with no `gui:=false` conditional. If the `rviz2`
+package is missing from `ament_index`, the launch's `OpaqueFunction` raises an
+exception and **takes move_group + all controllers down with it**.
+
+**Solution: rviz2 stub package.** The Dockerfile registers a minimal fake
+`rviz2` package in ament_index and installs a no-op shell script as the
+executable. When launch spawns it, the stub prints a one-liner and sleeps
+forever — consuming zero resources. All other launch nodes (move_group,
+ros2_control_node, controllers) start normally.
+
+This stub is installed on **every** container built from this Dockerfile (both
+personal PC and lab PC). On the lab PC the real robot is visible directly; rviz
+is not needed. If a real rviz2 is ever needed, it must be run outside this
+container on a host with a standard ROS 2 desktop installation.
+
 ## Troubleshooting
 
 - **`docker build` fails on `libfreetype6-dev` unmet dependency** — a
-  `ros-humble-*` package pulled rviz/ogre. This Dockerfile intentionally
-  avoids `ros-humble-desktop` and the full `ros-humble-moveit` metapackage.
-  Isaac Sim is the viewer; rviz's `libfreetype6-dev` transitively conflicts
-  with the nvcr Isaac Sim base image.
+  `ros-humble-*` package pulled rviz/ogre. See "Why rviz2 is not installed"
+  above. Do not add `ros-humble-desktop`, `ros-humble-rviz2`, or the full
+  `ros-humble-moveit` metapackage to the Dockerfile.
 - **Isaac Sim window never appears** — run `xhost +local:docker` and recreate
   the container with `bash docker/container.sh clean && bash docker/container.sh start`.
   Headless alternative: pass `--headless` to the bridge.

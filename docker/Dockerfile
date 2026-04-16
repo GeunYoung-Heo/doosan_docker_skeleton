@@ -45,6 +45,30 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         ros-${ROS_DISTRO}-moveit-configs-utils \
  && rm -rf /var/lib/apt/lists/*
 
+# --- rviz2 stub package ---
+# Real rviz2 cannot be installed: ros-humble-rviz2 depends on
+# ros-humble-rviz-ogre-vendor which requires libfreetype6-dev, and
+# nvcr.io/nvidia/isaac-sim:4.5.0 holds libfreetype6 at an incompatible
+# version. Isaac Sim replaces rviz for visualization.
+#
+# However, Doosan's official launch files (e.g. start.launch.py) hard-code
+# a `Node(package="rviz2")` spawn with no conditional. Without at least the
+# rviz2 *package metadata*, launch crashes at the OpaqueFunction stage and
+# takes move_group + controllers down with it.
+#
+# This stub registers a minimal rviz2 package in ament_index and installs a
+# no-op shell script as the executable. The launch system finds and spawns
+# it successfully; it just sleeps instead of rendering.
+RUN mkdir -p /opt/ros/${ROS_DISTRO}/share/ament_index/resource_index/packages \
+ && touch /opt/ros/${ROS_DISTRO}/share/ament_index/resource_index/packages/rviz2 \
+ && mkdir -p /opt/ros/${ROS_DISTRO}/share/rviz2 \
+ && printf '<?xml version="1.0"?>\n<package format="3">\n  <name>rviz2</name>\n  <version>0.0.0</version>\n  <description>Stub — Isaac Sim replaces rviz2</description>\n  <maintainer email="stub@stub">stub</maintainer>\n  <license>Apache-2.0</license>\n</package>\n' \
+      > /opt/ros/${ROS_DISTRO}/share/rviz2/package.xml \
+ && mkdir -p /opt/ros/${ROS_DISTRO}/lib/rviz2 \
+ && printf '#!/bin/bash\necho "[rviz2-stub] Isaac Sim replaces rviz2 in this container. Sleeping."\nwhile true; do sleep 86400; done\n' \
+      > /opt/ros/${ROS_DISTRO}/lib/rviz2/rviz2 \
+ && chmod +x /opt/ros/${ROS_DISTRO}/lib/rviz2/rviz2
+
 # --- rosdep init ---
 RUN rosdep init || true && rosdep update
 
