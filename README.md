@@ -1,147 +1,63 @@
 # Doosan M1013 + Isaac Sim 4.5 + ROS 2 Humble + MoveIt
 
-Single-container sim environment for a Doosan M1013 manipulator. MoveIt plans
-Cartesian / joint-space motions and Isaac Sim 4.5 renders the robot's PhysX
-articulation as it executes. The DRCF emulator is **not** used for motion —
-everything runs on `mock_components` + Isaac Sim, so there is no jerky amovej
-behavior and no second Docker container to manage.
+Doosan M1013 매니퓰레이터 + OnRobot RG2-FT V2 그리퍼를 위한 단일 컨테이너 환경.  
+실물 로봇과 Isaac Sim 시뮬레이션을 동일한 MoveIt/ROS 2 인터페이스로 제어한다.
 
-This repo is the sim environment only. The same `move_group` / ROS 2 control
-layer will be reused on a lab PC against a real M1013, with a small launch
-swap. See "Switching to real robot" below.
+---
 
-## Architecture
+## 빠른 시작 — 실물 로봇 + 그리퍼
 
-```
-┌──────────────────────────────────────────────────────────────────┐
-│                      doosan_isaac container                      │
-│                                                                  │
-│  (CaP / test scripts call MoveIt — e.g. /move_action)            │
-│    │                                                             │
-│    ▼                                                             │
-│  move_group (MoveIt OMPL)                                        │
-│    │ IK + planning + time parameterization                       │
-│    │ FollowJointTrajectory action                                │
-│    ▼                                                             │
-│  dsr_moveit_controller (joint_trajectory_controller/JTC, 100 Hz) │
-│    │ position command interface                                  │
-│    ▼                                                             │
-│  mock_components/GenericSystem  ← hardware interface             │
-│    │ (echo command → state, instant tracking)                    │
-│    │ position state interface                                    │
-│    ▼                                                             │
-│  joint_state_broadcaster                                         │
-│    │                                                             │
-│    ▼                                                             │
-│  /joint_states (100 Hz)                                          │
-│    │                                                             │
-│    ├─► robot_state_publisher → /tf                               │
-│    │                                                             │
-│    └─► Isaac Sim OmniGraph                                       │
-│            │ ROS2SubscribeJointState                             │
-│            ▼                                                     │
-│         IsaacArticulationController                              │
-│            ▼                                                     │
-│         M1013 PhysX articulation in Isaac Sim viewport           │
-│         (+ gravity, collision, camera sensors — future work)     │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-Why this design:
-
-1. **`move_group` produces the same time-parameterized trajectory whether
-   the backend is sim or real** — it only looks at URDF + SRDF + joint_limits.
-   The planned trajectory is identical in both modes.
-2. **PhysX drives track commanded positions faithfully** — visual and
-   kinematic behavior matches the real robot closely enough for CaP-style
-   high-level validation (collision, reachability, sequence correctness).
-3. **Collision detection happens in MoveIt's `PlanningScene`** — environment
-   objects go there at plan time. Isaac Sim PhysX is the visual safety net.
-4. **Swap to real robot = one xacro / hardware interface change**. Launch
-   structure, MoveIt config, CaP code, controllers, action names — all stay
-   the same.
-
-Why DRCF emulator was dropped:
-
-Earlier revisions used the `doosanrobot/dsr_emulator:3.0.1` container plus
-`dsr_hardware2` as the sim backend. In virtual mode, `dsr_hw_interface2.cpp`
-calls `Drfl.amovej(...)` — a point-to-point motion primitive — for every
-`write()` tick. With `joint_trajectory_controller` feeding ~100 position
-setpoints per second, each `amovej` call restarts an accel/decel profile and
-interrupts the previous one. The result is visibly jerky motion that can be
-reproduced with upstream `dsr_bringup2_moveit.launch.py` too. DRCF emulator
-is a protocol / state machine harness, not a physics simulator.
-
-## Repository layout
-
-```
-doosan_docker_skeleton/
-├── docker/
-│   ├── Dockerfile              # nvcr Isaac Sim 4.5 + ROS 2 Humble + MoveIt deps
-│   ├── bootstrap_ws.sh         # first-run: clone doosan-robot2 (humble @ pinned SHA) + colcon build
-│   ├── entrypoint.sh
-│   ├── container.sh            # {start|enter|stop|clean} container manager
-│   ├── docker_build.sh
-│   └── run_emulator.sh         # kept for protocol-level testing; NOT used by sim
-├── isaac/
-│   └── m1013_ros2_bridge.py    # Isaac Sim standalone app: USD load + ROS 2 bridge graph
-├── scripts/
-│   ├── m1013_sim_bringup.launch.py      # MoveIt + mock_components, no DRCF
-│   ├── dsr_moveit_controller_sim.yaml   # JTC command_interfaces override (position only)
-│   ├── moveit_backend_smoketest.py      # joint-space goal test
-│   └── moveit_pose_test.py              # Cartesian pose goal test (CaP-like API)
-├── third_party/                 # runtime-only, git-ignored (bootstrap clones here)
-└── README.md
-```
-
-## Prerequisites (host, one-time)
-
-- Ubuntu 22.04
-- NVIDIA GPU + recent driver
-- Docker Engine + **NVIDIA Container Toolkit** (`docker info | grep -i runtime` must include `nvidia`)
-- `xhost +local:docker` (each session, or persist)
-
-### How to check prerequisites
-
-Run the following on the **host** (not inside a container) and verify each
-line matches the expected output:
+> 처음 세팅하는 경우라면 아래 "전체 설치 가이드"를 먼저 읽고 돌아오세요.
 
 ```bash
-# 1. OS — must be Ubuntu 22.04
-lsb_release -a 2>/dev/null | grep "Release"
-# Expected: Release:  22.04
+# 1. 컨테이너 시작 (이미 생성된 경우 docker start만 실행됨)
+bash docker/container.sh start
 
-# 2. GPU + driver — must show an NVIDIA GPU
-nvidia-smi | head -5
-# Expected: NVIDIA-SMI XXX.XX.XX    Driver Version: XXX.XX.XX    CUDA Version: XX.X
-
-# 3. Docker Engine — must be installed and running
-docker --version
-# Expected: Docker version XX.X.X, ...
-
-# 4. NVIDIA Container Toolkit — 'nvidia' must appear in the runtime list
-docker info 2>/dev/null | grep -i "runtimes"
-# Expected: Runtimes: ... nvidia ...
-# If 'nvidia' is NOT listed → install the toolkit (see below)
-
-# 5. GPU passthrough into container — quick smoke test
-docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi 2>&1 | head -5
-# Expected: same GPU info as step 2 (proves GPU is accessible inside containers)
-
-# 6. Disk space — at least 30 GB free (Isaac Sim image ~15 GB + build ~10 GB)
-df -h ~ | tail -1
-# Expected: Avail column ≥ 30G
-
-# 7. X11 display forwarding (needed for Isaac Sim GUI)
-xhost +local:docker
-# Expected: non-SI:local:docker being added to access control list
-# (run this once per login session, or add to ~/.bashrc to persist)
+# 2. 컨테이너 진입 후 launch
+bash docker/container.sh enter
+source /ros2_ws/install/setup.bash
+ros2 launch /ros2_ws/src/real_bringup.launch.py \
+    host:=192.168.137.100 gripper_host:=192.168.1.1
 ```
 
-If **step 4** fails (no `nvidia` runtime), install NVIDIA Container Toolkit:
+`You can start planning now!` 메시지가 나오면 팔 + 그리퍼 모두 준비된 상태.
 
-If NVIDIA Container Toolkit is missing:
+```bash
+# 새 터미널에서
+bash docker/container.sh enter
+source /ros2_ws/install/setup.bash
+
+# 그리퍼 열기
+ros2 service call /onrobot_rg2_ft_node/set_gripper \
+    onrobot_rg2_ft/srv/SetGripper "{width: 110.0, force: 20.0}"
+
+# 팔 이동
+python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.55
+```
+
+---
+
+## 전체 설치 가이드 (최초 1회)
+
+### 1단계 — 호스트 소프트웨어 요구사항
+
+| 항목 | 요구사항 |
+|------|----------|
+| OS | Ubuntu 22.04 |
+| GPU | NVIDIA GPU + 드라이버 |
+| Docker | Docker Engine 설치 |
+| NVIDIA Container Toolkit | `docker info \| grep -i runtime` 에 `nvidia` 포함 |
+
+```bash
+# 확인 명령어
+lsb_release -a 2>/dev/null | grep Release          # 22.04
+nvidia-smi | head -3                                # GPU 정보 출력
+docker --version                                    # Docker 버전
+docker info 2>/dev/null | grep -i runtimes          # nvidia 포함 여부
+docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi | head -3  # GPU 컨테이너 접근 확인
+```
+
+NVIDIA Container Toolkit이 없다면:
 
 ```bash
 curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | \
@@ -154,7 +70,44 @@ sudo nvidia-ctk runtime configure --runtime=docker && \
 sudo systemctl restart docker
 ```
 
-## Setup
+### 2단계 — 호스트 네트워크 설정 (최초 1회, 재부팅 후에도 유지)
+
+컨테이너는 `--network host`로 실행되므로 호스트에 라우트를 설정하면 컨테이너 안에서도 자동으로 접근 가능하다.
+
+```bash
+# 현재 네트워크 인터페이스 확인
+ip addr show
+
+# enp5s0에 해당하는 ConnectionManager 연결 이름 확인
+nmcli connection show
+```
+
+로봇과 Compute Box가 연결된 인터페이스(예: `enp5s0`, 연결 이름 `Wired connection 1`)에 보조 IP를 영구 등록:
+
+```bash
+# 로봇 컨트롤러 대역 (192.168.137.x) — 이미 설정되어 있다면 생략
+nmcli connection modify "Wired connection 1" +ipv4.addresses 192.168.137.50/24
+
+# OnRobot Compute Box 대역 (192.168.1.x)
+nmcli connection modify "Wired connection 1" +ipv4.addresses 192.168.1.100/24
+
+# 적용
+nmcli connection up "Wired connection 1"
+
+# 확인 — 두 IP 모두 noprefixroute + valid_lft forever 로 표시되면 성공
+ip addr show enp5s0
+```
+
+> 이 설정은 재부팅해도 유지된다. 이후에는 별도의 네트워크 설정 없이 컨테이너를 시작하면 된다.
+
+연결 확인:
+
+```bash
+ping -c 2 192.168.137.100   # 로봇 컨트롤러
+ping -c 2 192.168.1.1       # OnRobot Compute Box
+```
+
+### 3단계 — 리포지토리 클론 및 컨테이너 최초 빌드
 
 ```bash
 git clone https://github.com/GeunYoung-Heo/doosan_docker_skeleton.git
@@ -163,261 +116,413 @@ chmod +x docker/*.sh
 bash docker/container.sh start
 ```
 
-`container.sh start` is idempotent and on first run does the following (~25 minutes total):
+`container.sh start` 최초 실행 시 약 25분 소요:
 
-1. `docker build` → pulls `nvcr.io/nvidia/isaac-sim:4.5.0` (~15 GB), installs
-   ROS 2 Humble + `ros-humble-ros-base` + moveit core + ros2_control + the
-   Doosan runtime dependencies.
-2. Creates the `doosan_isaac` container (`--gpus all --network host --ipc host
-   --privileged`, X11 forwarding, Isaac Sim caches bind-mounted).
-3. Runs `bootstrap_ws.sh` inside the container, which:
-   - clones `doosan-robot2` (humble branch, pinned commit `ec9242546`) into
-     `third_party/doosan-robot2/`;
-   - `rosdep install` + `colcon build --symlink-install`;
-   - leaves the container running as a background idle process.
+1. `docker build` — `nvcr.io/nvidia/isaac-sim:4.5.0` (~15 GB) 다운로드 + ROS 2 Humble / MoveIt / ros2_control 설치
+2. `doosan_isaac` 컨테이너 생성 (`--gpus all --network host --ipc host --privileged`)
+3. `bootstrap_ws.sh` 자동 실행:
+   - `doosan-robot2` (humble 브랜치, 고정 커밋 `ec9242546`) 클론
+   - `rosdep install` + `colcon build --symlink-install`
 
-Subsequent `container.sh start` calls just `docker start` the existing
-container. Use `stop`, `enter`, and `clean` for the other verbs.
+이후 `container.sh start`는 기존 컨테이너를 `docker start`만 한다.
 
-## Run order
-
-Three terminals (all open to the **same** `doosan_isaac` container via
-`docker exec -it`):
-
-### Terminal 1 — sim bringup (MoveIt + mock_components)
+### 4단계 — 그리퍼 패키지 빌드 (최초 1회)
 
 ```bash
-docker exec -it doosan_isaac bash
+bash docker/container.sh enter
+
+cd /ros2_ws
+colcon build --symlink-install --packages-select onrobot_rg2_ft
+source install/setup.bash
+```
+
+빌드 성공 확인:
+
+```bash
+ros2 pkg list | grep onrobot   # onrobot_rg2_ft 출력되면 성공
+```
+
+> `--symlink-install` 덕분에 `.py` 파일 수정은 재빌드 불필요.  
+> `msg/`, `srv/`, `CMakeLists.txt` 변경 시에만 재빌드 필요.
+
+---
+
+## 실물 로봇 사용
+
+### 매일 사용하는 절차
+
+```
+호스트                          컨테이너
+─────────────────────────────────────────────────────
+bash docker/container.sh start
+bash docker/container.sh enter  →  Terminal 1: launch
+                                →  Terminal 2: 제어 명령
+```
+
+**Terminal 1 — launch (팔 + 그리퍼 동시 기동)**
+
+```bash
+bash docker/container.sh enter
+source /ros2_ws/install/setup.bash
+ros2 launch /ros2_ws/src/real_bringup.launch.py \
+    host:=192.168.137.100 gripper_host:=192.168.1.1
+```
+
+정상 기동 시 로그 순서:
+
+```
+[gripper_node] Connecting to Compute Box at 192.168.1.1:502 (Modbus TCP) ...
+[gripper_node] Compute Box reachable.
+[gripper_node] onrobot_rg2_ft_node ready.
+...
+[move_group] You can start planning now!
+```
+
+`You can start planning now!` 가 나오면 팔과 그리퍼 모두 준비 완료.
+
+**Terminal 2 — 상태 확인**
+
+```bash
+bash docker/container.sh enter
+source /ros2_ws/install/setup.bash
+
+# 컨트롤러 확인
+ros2 control list_controllers
+# joint_state_broadcaster [active]
+# dsr_moveit_controller   [active]
+
+# 그리퍼 상태 모니터링 (5 Hz)
+ros2 topic echo /onrobot_rg2_ft_node/state
+# actual_width: 110.x, busy: False, gripped: False
+```
+
+### 그리퍼 제어
+
+```bash
+# 완전히 열기 (110 mm, 20 N)
+ros2 service call /onrobot_rg2_ft_node/set_gripper \
+    onrobot_rg2_ft/srv/SetGripper "{width: 110.0, force: 20.0}"
+
+# 물체 파지 (그리퍼가 물체에 닿으면 자동 정지, gripped: True)
+ros2 service call /onrobot_rg2_ft_node/set_gripper \
+    onrobot_rg2_ft/srv/SetGripper "{width: 0.0, force: 30.0}"
+
+# 중간 위치 (60 mm, 약한 힘)
+ros2 service call /onrobot_rg2_ft_node/set_gripper \
+    onrobot_rg2_ft/srv/SetGripper "{width: 60.0, force: 10.0}"
+```
+
+### MoveIt 웨이포인트 제어
+
+```bash
+# 홈 포지션 (모든 관절 0°)
+python3 /ros2_ws/src/moveit_backend_smoketest.py
+
+# Cartesian 목표 (x=0.45 y=0.0 z=0.55, 팁 아래 방향)
+python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.55
+
+# 자세 없이 위치만 (MoveIt이 자세 자동 선택)
+python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.6 0.0 0.3 --position-only
+```
+
+### 팔 + 그리퍼 연계 예시
+
+```bash
+# 1. 목표 위치로 이동
+python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.35
+
+# 2. 파지
+ros2 service call /onrobot_rg2_ft_node/set_gripper \
+    onrobot_rg2_ft/srv/SetGripper "{width: 0.0, force: 25.0}"
+
+# 3. 들어올리기
+python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.55
+
+# 4. 내려놓기
+ros2 service call /onrobot_rg2_ft_node/set_gripper \
+    onrobot_rg2_ft/srv/SetGripper "{width: 110.0, force: 20.0}"
+```
+
+### real_bringup.launch.py 전체 인수
+
+| 인수 | 기본값 | 설명 |
+|------|--------|------|
+| `host` | `192.168.137.100` | 로봇 컨트롤러 IP |
+| `port` | `12345` | 로봇 컨트롤러 포트 |
+| `mode` | `real` | `real` 또는 `virtual` |
+| `model` | `m1013` | 로봇 모델 |
+| `rt_host` | `192.168.137.50` | RT 인터페이스 IP |
+| `gripper_host` | `192.168.1.1` | OnRobot Compute Box IP |
+| `gui` | `false` | RViz2 실행 여부 (이 컨테이너에서는 stub) |
+| `name` | `` | 로봇 네임스페이스 |
+
+---
+
+## 시뮬레이션 사용 (Isaac Sim)
+
+### Terminal 1 — MoveIt + mock_components
+
+```bash
+bash docker/container.sh enter
 source /opt/ros/humble/setup.bash
 source /ros2_ws/install/setup.bash
 ros2 launch /ros2_ws/src/m1013_sim_bringup.launch.py
 ```
 
-Wait until you see `You can start planning now!` — typically ~30 seconds
-after launch. At this point:
+`You can start planning now!` 까지 약 30초 대기.
 
-- `/controller_manager` is active with `joint_state_broadcaster` +
-  `dsr_moveit_controller`;
-- `/joint_states` publishes at 100 Hz;
-- `/move_action` (MoveGroup action) is ready.
-
-### Terminal 2 — Isaac Sim viewport
+### Terminal 2 — Isaac Sim 뷰포트
 
 ```bash
-docker exec -it doosan_isaac bash
+bash docker/container.sh enter
 /isaac-sim/python.sh /workspace/isaac/m1013_ros2_bridge.py
 ```
 
-The script:
+창이 열리면 M1013 PhysX 아티큘레이션이 `/joint_states`를 따라 움직인다.  
+헤드리스 실행: `--headless` 옵션 추가.
 
-1. Boots a standalone Isaac Sim 4.5 app with the RTX renderer.
-2. Enables the `isaacsim.ros2.bridge` extension.
-3. Loads the official `m1013.usd` from `dsr_description2`.
-4. Moves the `ArticulationRootAPI` from the shipped `root_joint` fixed joint
-   onto `base_link` so PhysX tensors can register a valid articulation.
-5. Wires an OmniGraph `ROS2SubscribeJointState → IsaacArticulationController`
-   chain that mirrors `/joint_states` into the M1013 PhysX articulation.
-6. Auto-plays the timeline and enters the main loop.
-
-When the window appears, the robot may start at a non-home pose — it will
-converge to whatever `/joint_states` is currently reporting (mock_components
-remembers the last commanded state across bridge restarts).
-
-Headless alternative: add `--headless`.
-
-### Terminal 3 — command / test
+### Terminal 3 — 동작 테스트
 
 ```bash
-docker exec -it doosan_isaac bash
+bash docker/container.sh enter
 source /opt/ros/humble/setup.bash
 source /ros2_ws/install/setup.bash
-```
 
-#### Joint-space goal (degrees — same convention as doosan `move_joint` service)
+# 홈 포지션 (모든 관절 0°)
+python3 /ros2_ws/src/moveit_backend_smoketest.py
 
-```bash
-# Move to specific joint angles (in degrees)
+# 관절 공간 목표 (도 단위, Doosan move_joint 서비스와 동일 단위계)
 python3 /ros2_ws/src/moveit_pose_test.py --joints 0 0 90 0 90 0
-
-# Another pose
 python3 /ros2_ws/src/moveit_pose_test.py --joints 30 -20 60 10 80 -15
 
-# Go home (all zeros)
-python3 /ros2_ws/src/moveit_pose_test.py --joints 0 0 0 0 0 0
-```
-
-Values are in **degrees** — the script converts to radians internally and
-sends a MoveGroup joint-space goal via `/move_action`. This works in both
-sim mode and real mode (same command, different launch backend).
-
-#### Cartesian pose goal (the CaP-style interface)
-
-```bash
-# Default — tip at [0.45, 0, 0.55] with tip pointing down
-python3 /ros2_ws/src/moveit_pose_test.py
-
-# Custom target
+# Cartesian 목표
+python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.55
 python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.4 0.3 0.4
-
-# Position only (MoveIt picks any orientation)
-python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.6 0.0 0.3 --position-only
-
-# Unreachable — should return PLANNING_FAILED
-python3 /ros2_ws/src/moveit_pose_test.py --xyz 1.5 0 0.5
 ```
 
-#### How it works
+`--joints`는 도 단위로 입력하면 스크립트가 라디안으로 변환해 `/move_action`에 관절 공간 목표를 전송한다. 시뮬/실물 모두 동일한 명령 사용.
 
-Each successful call (joint or Cartesian):
+---
 
-1. Sends a MoveGroup goal (JointConstraint or PositionConstraint) to `/move_action`;
-2. MoveIt plans + executes via `dsr_moveit_controller` (JTC);
-3. `/joint_states` transitions to the new configuration;
-4. Isaac Sim mirrors the motion in the viewport smoothly.
+## ROS 2 인터페이스 정리
 
-This is the same interface CaP will use. `--joints` for joint-space control,
-`--xyz` for Cartesian IK control.
+### 팔 (MoveIt)
 
-## Verification
+| 타입 | 이름 | 설명 |
+|------|------|------|
+| Action | `/move_action` | MoveGroup 목표 전송 |
+| Topic | `/joint_states` | 관절 상태 (100 Hz) |
+| Service | `/controller_manager/...` | 컨트롤러 관리 |
 
-After following the run order once, the following should all hold:
+### 그리퍼
 
-- [ ] `ros2 control list_controllers --controller-manager /controller_manager`
-      shows `joint_state_broadcaster` + `dsr_moveit_controller` both `active`.
-- [ ] `ros2 action list | grep move_action` returns `/move_action`.
-- [ ] `ros2 topic hz /joint_states` shows ~100 Hz.
-- [ ] `moveit_backend_smoketest.py` returns `SUCCESS` and `/joint_states`
-      goes to `[0, 0, 0, 0, 0, 0]`.
-- [ ] `moveit_pose_test.py` returns `SUCCESS` for the default pose.
-- [ ] The Isaac Sim viewport shows the M1013 moving smoothly during each
-      motion (no jerky stop-start behavior).
+| 타입 | 이름 | 설명 |
+|------|------|------|
+| Service | `/onrobot_rg2_ft_node/set_gripper` | width(mm) + force(N) 명령 |
+| Topic | `/onrobot_rg2_ft_node/state` | 현재 상태 (5 Hz) |
 
-## Switching to a real M1013
+**SetGripper 서비스 정의:**
 
-**No custom real-robot launch is written.** Use Doosan's official upstream
-launch directly — it is already tested and safe:
-
-```bash
-# On lab PC with the real M1013 connected:
-ros2 launch dsr_moveit_config_m1013 start.launch.py \
-    mode:=real host:=<ROBOT_IP> port:=12345 model:=m1013
+```
+float64 width    # mm [0.0 – 110.0]
+float64 force    # N  [0.0 – 40.0]
+---
+bool    success
+string  message
 ```
 
-This launches `dsr_hardware2` (servoj_rt streaming), `dsr_moveit_controller`
-(JTC), `dsr_controller2` (services), `move_group`, and `rviz2`. All official
-Doosan code. Our scripts (`moveit_pose_test.py`, `trajectory_recorder.py`) are
-read-only observers / action clients that work without modification.
+**GripperState 토픽 정의:**
 
-The key takeaway: everything above the hardware interface (MoveIt, controllers,
-topics, actions, scripts) is identical in sim and real. Only the ros2_control
-plugin + its URDF source changes — and that swap is handled entirely by which
-launch file you run.
+```
+builtin_interfaces/Time stamp
+float64 actual_width    # 현재 열림 폭 (mm)
+bool    busy            # 동작 중이면 True
+bool    gripped         # 물체 감지 / 목표 힘 도달 시 True
+```
 
-## Sim-to-real trajectory comparison
+---
 
-To quantitatively verify that sim and real produce the same trajectories:
+## OnRobot RG2-FT V2 드라이버 상세
 
-### 1. Record in sim
+### 통신 구조
+
+```
+gripper_node.py
+  │
+  ├── command()  → Modbus TCP → 192.168.1.1:502 (Unit ID 65)
+  │                FC16 write regs 2–4: [force_01N, width_01mm, control=1]
+  │                  reg 2 = target force  [0.1 N  단위, 0–400  → 0–40 N  ]
+  │                  reg 3 = target width  [0.1 mm 단위, 0–1100 → 0–110 mm]
+  │                  reg 4 = control       [1 쓰면 실행]
+  │
+  └── get_state() → Socket.IO → 192.168.1.1/socket.io (EIO=4, HTTP long-polling)
+                   event "message" → devices[0].variable.backpack
+                     width (float) → actual_width mm
+                     grip  (bool)  → gripped
+                     ready (bool)  → not busy
+```
+
+**왜 Modbus TCP인가:**  
+Compute Box는 HTTP REST(`/api/dc/rg2ft/set_width/{t}/{e}`)도 제공하지만 이는
+웹 GUI 시퀀스 트리거로, 위치 제어가 아니다. 파라미터와 무관하게 비결정적인 위치로
+이동한다. 정확한 위치 제어는 Modbus TCP(포트 502) 레지스터 쓰기가 올바른 인터페이스다.  
+`pymodbus` 등 외부 라이브러리 불필요 — Python stdlib `socket` + `struct`만 사용.
+
+### 노드 파라미터
+
+| 파라미터 | 기본값 | 설명 |
+|----------|--------|------|
+| `host` | `192.168.1.1` | Compute Box IP |
+| `timeout_sec` | `3.0` | Modbus/HTTP 타임아웃 |
+| `state_hz` | `5.0` | 상태 토픽 발행 주기 |
+
+---
+
+## 아키텍처
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                      doosan_isaac container                      │
+│                                                                  │
+│  MoveIt / test scripts  →  /move_action                          │
+│    │                                                             │
+│    ▼                                                             │
+│  move_group (MoveIt OMPL)                                        │
+│    │ IK + 경로계획 + 시간 파라미터화                              │
+│    ▼                                                             │
+│  dsr_moveit_controller (JTC, 100 Hz)                             │
+│    │                                                             │
+│    ▼  [실물]                    ▼  [시뮬]                        │
+│  dsr_hardware2               mock_components/GenericSystem       │
+│  (servoj_rt 스트리밍)         (명령 → 상태 즉시 반영)            │
+│    │                                │                           │
+│    └──────────┬─────────────────────┘                           │
+│               ▼                                                  │
+│         joint_state_broadcaster  →  /joint_states (100 Hz)      │
+│               │                                                  │
+│               ├─► robot_state_publisher → /tf                    │
+│               └─► Isaac Sim OmniGraph (시뮬 전용)                │
+│                       IsaacArticulationController                │
+│                       M1013 PhysX 아티큘레이션                   │
+│                                                                  │
+│  onrobot_rg2_ft_node                                             │
+│    ├── Modbus TCP → 192.168.1.1:502  (명령)                      │
+│    ├── Socket.IO  → 192.168.1.1      (상태 5 Hz)                 │
+│    ├── Service  ~/set_gripper                                    │
+│    └── Topic    ~/state                                          │
+│                                                                  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 리포지토리 구조
+
+```
+doosan_docker_skeleton/
+├── docker/
+│   ├── Dockerfile              # Isaac Sim 4.5 + ROS 2 Humble + MoveIt
+│   ├── bootstrap_ws.sh         # 최초 실행: doosan-robot2 클론 + colcon build
+│   ├── entrypoint.sh
+│   ├── container.sh            # {start|enter|stop|clean}
+│   ├── docker_build.sh
+│   └── run_emulator.sh         # 프로토콜 테스트용 (시뮬에서는 미사용)
+├── isaac/
+│   └── m1013_ros2_bridge.py    # Isaac Sim 독립 앱: USD 로드 + ROS 2 브리지
+├── scripts/
+│   ├── real_bringup.launch.py           # 실물: 팔(Doosan) + 그리퍼 동시 기동
+│   ├── m1013_sim_bringup.launch.py      # 시뮬: MoveIt + mock_components
+│   ├── dsr_moveit_controller_sim.yaml   # JTC 명령 인터페이스 오버라이드
+│   ├── moveit_backend_smoketest.py      # 관절 공간 목표 테스트
+│   ├── moveit_pose_test.py              # Cartesian 목표 테스트
+│   ├── trajectory_recorder.py          # 궤적 기록
+│   ├── trajectory_compare.py           # 시뮬-실물 궤적 비교
+│   └── onrobot_rg2_ft/                  # ROS 2 그리퍼 드라이버 패키지
+│       ├── package.xml
+│       ├── CMakeLists.txt
+│       ├── msg/GripperState.msg
+│       ├── srv/SetGripper.srv
+│       └── onrobot_rg2_ft/
+│           ├── gripper_node.py          # ROS 2 노드 (서비스 + 토픽)
+│           └── compute_box_client.py   # Modbus TCP + Socket.IO 클라이언트
+├── third_party/                 # 런타임 전용, git-ignore (bootstrap이 클론)
+└── README.md
+```
+
+---
+
+## 시뮬-실물 궤적 비교
+
+동일한 목표에 대해 시뮬과 실물의 궤적이 얼마나 일치하는지 정량 검증.
 
 ```bash
-# Terminal A: sim bringup already running
-# Terminal B: start recorder, then send a goal
+# 시뮬에서 기록
 python3 /ros2_ws/src/trajectory_recorder.py -o sim_traj.csv
-# Terminal C:
 python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.55
-# Recorder auto-stops after motion idle → sim_traj.csv saved
-```
 
-### 2. Record on real robot (lab PC)
-
-```bash
-# Terminal A: Doosan official launch (see above)
-# Terminal B:
+# 실물에서 기록 (real_bringup 실행 후)
 python3 /ros2_ws/src/trajectory_recorder.py -o real_traj.csv
-# Terminal C:
 python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.55
-# Same goal, same recorder → real_traj.csv saved
+
+# 비교
+python3 trajectory_compare.py sim_traj.csv real_traj.csv \
+    --threshold-deg 2.0 --plot comparison.png
 ```
 
-### 3. Compare
+출력: 관절별 max/mean/RMSE 오차(도), PASS/FAIL 판정, 12패널 오버레이 플롯.
 
-```bash
-python3 trajectory_compare.py sim_traj.csv real_traj.csv --threshold-deg 2.0 --plot comparison.png
-```
+---
 
-Output: per-joint max / mean / RMSE error in degrees, PASS/FAIL verdict,
-and a 12-panel overlay + error plot.
+## 트러블슈팅
 
-## Why rviz2 is not installed (and what we do instead)
+### 네트워크
 
-`ros-humble-rviz2` depends on `ros-humble-rviz-ogre-vendor`, which
-transitively requires `libfreetype6-dev`. The `nvcr.io/nvidia/isaac-sim:4.5.0`
-base image holds `libfreetype6` at a version that conflicts with the `-dev`
-package, so `apt install ros-humble-rviz2` fails with "unmet dependencies".
-This also blocks `ros-humble-desktop` and the full `ros-humble-moveit`
-metapackage.
+| 증상 | 원인 | 해결 |
+|------|------|------|
+| `ping 192.168.137.100` 실패 | 호스트 라우트 없음 | 전체 설치 가이드 2단계 (nmcli) 재실행 |
+| `ping 192.168.1.1` 실패 | Compute Box 라우트 없음 | `nmcli connection modify "Wired connection 1" +ipv4.addresses 192.168.1.100/24` |
+| 재부팅 후 연결 끊김 | `ip addr add`로 임시 설정했던 경우 | nmcli로 영구 등록 필요 (전체 설치 가이드 2단계) |
 
-**Isaac Sim replaces rviz** for 3D visualization and robot state rendering in
-this container. Everything that rviz would show (robot model, TF tree, planned
-trajectories, joint state) is available through Isaac Sim's OmniGraph ROS 2
-bridge.
+### 그리퍼
 
-**However**, Doosan's official launch files (e.g.
-`dsr_moveit_config_m1013/launch/start.launch.py`) unconditionally spawn
-`Node(package="rviz2")` with no `gui:=false` conditional. If the `rviz2`
-package is missing from `ament_index`, the launch's `OpaqueFunction` raises an
-exception and **takes move_group + all controllers down with it**.
+| 증상 | 원인 | 해결 |
+|------|------|------|
+| `actual_width` 가 0.0 고정 | Socket.IO 연결 실패 | `curl http://192.168.1.1/` 로 Compute Box 응답 확인 |
+| `set_gripper` → `Compute Box unreachable` | Modbus TCP 포트 502 차단 | `python3 -c "import socket; socket.create_connection(('192.168.1.1',502),3); print('OK')"` |
+| 명령은 성공하지만 그리퍼가 엉뚱한 위치로 이동 | 구 버전 HTTP REST 코드 남아있음 | `rm -rf /ros2_ws/build/onrobot_rg2_ft && colcon build --symlink-install --packages-select onrobot_rg2_ft` |
 
-**Solution: rviz2 stub package.** The Dockerfile registers a minimal fake
-`rviz2` package in ament_index and installs a no-op shell script as the
-executable. When launch spawns it, the stub prints a one-liner and sleeps
-forever — consuming zero resources. All other launch nodes (move_group,
-ros2_control_node, controllers) start normally.
+### MoveIt / 팔
 
-This stub is installed on **every** container built from this Dockerfile (both
-personal PC and lab PC). On the lab PC the real robot is visible directly; rviz
-is not needed. If a real rviz2 is ever needed, it must be run outside this
-container on a host with a standard ROS 2 desktop installation.
+| 증상 | 원인 | 해결 |
+|------|------|------|
+| `PLANNING_FAILED` / `NO_IK_SOLUTION` | 목표 포즈 도달 불가 | `--position-only` 추가 또는 xyz 조정 |
+| 컨트롤러 `inactive` | 아직 초기화 중 | `You can start planning now!` 대기 |
+| `dsr_moveit_controller` Failed to activate | velocity 인터페이스 충돌 (시뮬) | `dsr_moveit_controller_sim.yaml` 이 launch에 포함되어 있는지 확인 |
 
-## Troubleshooting
+### 빌드
 
-- **`docker build` fails on `libfreetype6-dev` unmet dependency** — a
-  `ros-humble-*` package pulled rviz/ogre. See "Why rviz2 is not installed"
-  above. Do not add `ros-humble-desktop`, `ros-humble-rviz2`, or the full
-  `ros-humble-moveit` metapackage to the Dockerfile.
-- **Isaac Sim window never appears** — run `xhost +local:docker` and recreate
-  the container with `bash docker/container.sh clean && bash docker/container.sh start`.
-  Headless alternative: pass `--headless` to the bridge.
-- **`omni.physx.tensors.plugin: did not match any rigid bodies`** — the
-  `ArticulationRootAPI` patch in the bridge did not find `base_link` under
-  the USD reference. Check the bridge's `[bridge] === stage dump ===`
-  output (uncomment the walk) and adjust the path if the USD layout changes.
-- **`dsr_moveit_controller` activates as `inactive` / "Failed to activate"** —
-  the JTC is trying to claim both `position` and `velocity` command
-  interfaces but `mock_components` only exposes `position`. Check that
-  `scripts/dsr_moveit_controller_sim.yaml` is in the `control_node`'s
-  `parameters=` list and is being loaded (you should see it in the param
-  file arguments of `ros2_control_node`).
-- **`move_action` goal returns `PLANNING_FAILED` / `NO_IK_SOLUTION`** — the
-  requested pose is outside M1013's workspace or in collision. Try a closer
-  xyz or pass `--position-only` to let MoveIt pick any orientation.
-- **Isaac Sim starts at a non-home pose** — `mock_components` remembers the
-  last commanded state across restarts of the Isaac Sim bridge (but not
-  across restarts of `m1013_sim_bringup.launch.py`, which resets to the USD
-  defaults). Send a home goal first:
-  `python3 /ros2_ws/src/moveit_backend_smoketest.py`.
+| 증상 | 원인 | 해결 |
+|------|------|------|
+| `add_custom_target ... already exists` | `ament_cmake_python` + `rosidl` 충돌 | `CMakeLists.txt`에서 `ament_cmake_python` / `ament_python_install_package` 제거 |
+| `ModuleNotFoundError: compute_box_client` | 모듈 경로 미등록 | `gripper_node.py` 상단에 `sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)))` 확인 |
 
-## Reference — what's NOT used any more (legacy)
+### Isaac Sim (시뮬 전용)
 
-This repo used to have a larger surface area exploring DRCF-backed sim and
-an Isaac Sim drag-to-command UI. Those files were removed once we confirmed
-that:
+| 증상 | 원인 | 해결 |
+|------|------|------|
+| 창이 열리지 않음 | X11 포워딩 없음 | `xhost +local:docker` 실행 후 재시도 |
+| `did not match any rigid bodies` | ArticulationRootAPI 경로 불일치 | 브리지 스크립트 stage dump 확인 후 경로 수정 |
+| 비홈 포즈에서 시작 | mock_components가 이전 상태 유지 | `moveit_backend_smoketest.py` 로 홈 이동 후 시작 |
 
-- DRCF emulator (virtual mode) gives jerky motion via `amovej`, reproduced
-  with upstream Doosan launches too;
-- the drag UI was a test-time convenience and CaP will drive the robot via
-  API calls, not mouse drags.
+---
 
-`docker/run_emulator.sh` is kept as a convenience for someone who wants to
-talk to a real DRCF binary for protocol-level testing. It is not wired into
-any launch in this repo.
+## 설계 결정 메모
+
+**DRCF 에뮬레이터 제거 이유:**  
+`dsr_hardware2` 가상 모드에서 `write()` 틱마다 `Drfl.amovej()` 호출 → JTC가 초당 100개의 위치 setpoint를 보낼 때 매번 가감속 프로파일이 재시작되어 눈에 띄는 jerky 움직임 발생. DRCF 에뮬레이터는 물리 시뮬레이터가 아닌 프로토콜/상태 머신 하네스.
+
+**rviz2 stub 이유:**  
+`ros-humble-rviz2`의 의존성 `libfreetype6-dev`가 Isaac Sim 베이스 이미지의 `libfreetype6`와 충돌. Doosan 공식 launch가 rviz2 노드를 무조건 spawn하므로 패키지가 없으면 move_group까지 크래시. No-op stub으로 해결.
+
+**HTTP REST 대신 Modbus TCP:**  
+Compute Box HTTP API(`/api/dc/rg2ft/set_width/`)는 웹 GUI 시퀀스 트리거로, 실제 위치 제어가 아님. Modbus TCP 레지스터 쓰기(포트 502, Unit ID 65)가 정확한 위치 + 힘 제어 인터페이스.

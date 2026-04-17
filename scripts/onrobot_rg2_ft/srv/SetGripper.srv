@@ -1,0 +1,5 @@
+float64 width    # target opening in mm [0.0 - 110.0]
+float64 force    # target grip force in N [0.0 - 40.0]
+---
+bool   success
+string message
