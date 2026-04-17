@@ -214,11 +214,31 @@ ros2 service call /onrobot_rg2_ft_node/set_gripper \
 
 ### MoveIt 웨이포인트 제어
 
-```bash
-# 홈 포지션 (모든 관절 0°)
-python3 /ros2_ws/src/moveit_backend_smoketest.py
+#### 관절 공간 제어 (Joint-space)
 
-# Cartesian 목표 (x=0.45 y=0.0 z=0.55, 팁 아래 방향)
+6개 관절 각도를 **도(°)** 단위로 직접 지정한다. 스크립트가 라디안으로 변환해 MoveIt에 전달.
+
+```bash
+# 현재 관절 각도 확인 (라디안 → 수동으로 도 환산)
+ros2 topic echo /joint_states --once
+
+# 홈 포지션 (모든 관절 0°)
+python3 /ros2_ws/src/moveit_pose_test.py --joints 0 0 0 0 0 0
+
+# 예시: J3=90°, J5=90°
+python3 /ros2_ws/src/moveit_pose_test.py --joints 0 0 90 0 90 0
+
+# 자유 포즈
+python3 /ros2_ws/src/moveit_pose_test.py --joints 30 -20 60 10 80 -15
+```
+
+> 실물 첫 동작 전에는 반드시 현재 관절 각도를 확인하고 목표를 설정할 것.  
+> 큰 각도 변화는 충돌 위험이 있다. 속도는 최대 30%로 제한되어 있다.
+
+#### Cartesian 제어 (작업 공간)
+
+```bash
+# 특정 xyz 위치로 이동 (팁 아래 방향)
 python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.55
 
 # 자세 없이 위치만 (MoveIt이 자세 자동 선택)
