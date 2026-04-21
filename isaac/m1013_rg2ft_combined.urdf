@@ -437,14 +437,14 @@
     <visual>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="file:///ros2_ws/src/third_party/OnRobot-RG2FT-ROS/onrobot_rg2ft_description/meshes/visual/quick_changer.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="file:///workspace/isaac/gripper_meshes/visual/quick_changer.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="blue"/>
     </visual>
     <collision>
       <origin rpy="0 0 0" xyz="0 0 0"/>
       <geometry>
-        <mesh filename="file:///ros2_ws/src/third_party/OnRobot-RG2FT-ROS/onrobot_rg2ft_description/meshes/collision/quick_changer.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="file:///workspace/isaac/gripper_meshes/collision/quick_changer.stl" scale="0.001 0.001 0.001"/>
       </geometry>
     </collision>
   </link>
@@ -457,14 +457,14 @@
     <visual>
       <origin rpy="0 0 0" xyz="0.02705 -0.0 -0.047"/>
       <geometry>
-        <mesh filename="file:///ros2_ws/src/third_party/OnRobot-RG2FT-ROS/onrobot_rg2ft_description/meshes/visual/gripper_body.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="file:///workspace/isaac/gripper_meshes/visual/gripper_body.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="silver"/>
     </visual>
     <collision>
       <origin rpy="0 0 0" xyz="0.02705 -0.0 -0.047"/>
       <geometry>
-        <mesh filename="file:///ros2_ws/src/third_party/OnRobot-RG2FT-ROS/onrobot_rg2ft_description/meshes/collision/gripper_body.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="file:///workspace/isaac/gripper_meshes/collision/gripper_body.stl" scale="0.001 0.001 0.001"/>
       </geometry>
     </collision>
   </link>
@@ -477,14 +477,14 @@
     <visual>
       <origin rpy="0 0 0" xyz="-0.0 -0.0 -0.00255"/>
       <geometry>
-        <mesh filename="file:///ros2_ws/src/third_party/OnRobot-RG2FT-ROS/onrobot_rg2ft_description/meshes/visual/angle_bracket.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="file:///workspace/isaac/gripper_meshes/visual/angle_bracket.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="silver"/>
     </visual>
     <collision>
       <origin rpy="0 0 0" xyz="-0.0 -0.0 -0.00255"/>
       <geometry>
-        <mesh filename="file:///ros2_ws/src/third_party/OnRobot-RG2FT-ROS/onrobot_rg2ft_description/meshes/collision/angle_bracket.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="file:///workspace/isaac/gripper_meshes/collision/angle_bracket.stl" scale="0.001 0.001 0.001"/>
       </geometry>
     </collision>
   </link>
@@ -497,14 +497,14 @@
     <visual>
       <origin rpy="0 0 0" xyz="-0.0075 0.009367 -0.139397"/>
       <geometry>
-        <mesh filename="file:///ros2_ws/src/third_party/OnRobot-RG2FT-ROS/onrobot_rg2ft_description/meshes/visual/left_inner_knuckle.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="file:///workspace/isaac/gripper_meshes/visual/left_inner_knuckle.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="silver"/>
     </visual>
     <collision>
       <origin rpy="0 0 0" xyz="-0.0075 0.009367 -0.139397"/>
       <geometry>
-        <mesh filename="file:///ros2_ws/src/third_party/OnRobot-RG2FT-ROS/onrobot_rg2ft_description/meshes/collision/left_inner_knuckle.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="file:///workspace/isaac/gripper_meshes/collision/left_inner_knuckle.stl" scale="0.001 0.001 0.001"/>
       </geometry>
     </collision>
   </link>
@@ -517,14 +517,14 @@
     <visual>
       <origin rpy="0 0 0" xyz="0.017 0.009534 -0.122898"/>
       <geometry>
-        <mesh filename="file:///ros2_ws/src/third_party/OnRobot-RG2FT-ROS/onrobot_rg2ft_description/meshes/visual/right_outer_knuckle.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="file:///workspace/isaac/gripper_meshes/visual/right_outer_knuckle.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="silver"/>
     </visual>
     <collision>
       <origin rpy="0 0 0" xyz="0.017 0.009534 -0.122898"/>
       <geometry>
-        <mesh filename="file:///ros2_ws/src/third_party/OnRobot-RG2FT-ROS/onrobot_rg2ft_description/meshes/collision/right_outer_knuckle.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="file:///workspace/isaac/gripper_meshes/collision/right_outer_knuckle.stl" scale="0.001 0.001 0.001"/>
       </geometry>
     </collision>
   </link>
@@ -537,14 +537,14 @@
     <visual>
       <origin rpy="0 0 0" xyz="-0.017 0.009534 -0.122898"/>
       <geometry>
-        <mesh filename="file:///ros2_ws/src/third_party/OnRobot-RG2FT-ROS/onrobot_rg2ft_description/meshes/visual/left_outer_knuckle.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="file:///workspace/isaac/gripper_meshes/visual/left_outer_knuckle.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="silver"/>
     </visual>
     <collision>
       <origin rpy="0 0 0" xyz="-0.017 0.009534 -0.122898"/>
       <geometry>
-        <mesh filename="file:///ros2_ws/src/third_party/OnRobot-RG2FT-ROS/onrobot_rg2ft_description/meshes/collision/left_outer_knuckle.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="file:///workspace/isaac/gripper_meshes/collision/left_outer_knuckle.stl" scale="0.001 0.001 0.001"/>
       </geometry>
     </collision>
   </link>
@@ -557,14 +557,14 @@
     <visual>
       <origin rpy="0 0 0" xyz="-0.056748 0.00475 -0.160866"/>
       <geometry>
-        <mesh filename="file:///ros2_ws/src/third_party/OnRobot-RG2FT-ROS/onrobot_rg2ft_description/meshes/visual/left_inner_finger.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="file:///workspace/isaac/gripper_meshes/visual/left_inner_finger.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="silver"/>
     </visual>
     <collision>
       <origin rpy="0 0 0" xyz="-0.056748 0.00475 -0.160866"/>
       <geometry>
-        <mesh filename="file:///ros2_ws/src/third_party/OnRobot-RG2FT-ROS/onrobot_rg2ft_description/meshes/collision/left_inner_finger.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="file:///workspace/isaac/gripper_meshes/collision/left_inner_finger.stl" scale="0.001 0.001 0.001"/>
       </geometry>
     </collision>
   </link>
@@ -577,14 +577,14 @@
     <visual>
       <origin rpy="0 0 0" xyz="0.056748 0.00475 -0.160866"/>
       <geometry>
-        <mesh filename="file:///ros2_ws/src/third_party/OnRobot-RG2FT-ROS/onrobot_rg2ft_description/meshes/visual/right_inner_finger.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="file:///workspace/isaac/gripper_meshes/visual/right_inner_finger.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="silver"/>
     </visual>
     <collision>
       <origin rpy="0 0 0" xyz="0.056748 0.00475 -0.160866"/>
       <geometry>
-        <mesh filename="file:///ros2_ws/src/third_party/OnRobot-RG2FT-ROS/onrobot_rg2ft_description/meshes/collision/right_inner_finger.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="file:///workspace/isaac/gripper_meshes/collision/right_inner_finger.stl" scale="0.001 0.001 0.001"/>
       </geometry>
     </collision>
   </link>
@@ -597,14 +597,14 @@
     <visual>
       <origin rpy="0 0 0" xyz="0.0075 0.009367 -0.139397"/>
       <geometry>
-        <mesh filename="file:///ros2_ws/src/third_party/OnRobot-RG2FT-ROS/onrobot_rg2ft_description/meshes/visual/right_inner_knuckle.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="file:///workspace/isaac/gripper_meshes/visual/right_inner_knuckle.stl" scale="0.001 0.001 0.001"/>
       </geometry>
       <material name="silver"/>
     </visual>
     <collision>
       <origin rpy="0 0 0" xyz="0.0075 0.009367 -0.139397"/>
       <geometry>
-        <mesh filename="file:///ros2_ws/src/third_party/OnRobot-RG2FT-ROS/onrobot_rg2ft_description/meshes/collision/right_inner_knuckle.stl" scale="0.001 0.001 0.001"/>
+        <mesh filename="file:///workspace/isaac/gripper_meshes/collision/right_inner_knuckle.stl" scale="0.001 0.001 0.001"/>
       </geometry>
     </collision>
   </link>

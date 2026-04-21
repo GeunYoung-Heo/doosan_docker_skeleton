@@ -52,8 +52,9 @@ sed -e '/<mimic /d' \
     ${GRIP_URDF_RESOLVED} > ${GRIP_URDF_NO_MIMIC}
 
 # ---- Step 3: Resolve mesh paths to absolute file:// ----
-# Also fix gripper: package:// → file://
-sed -i "s|package://onrobot_rg2ft_description/|file://${GRIP_DIR}/|g" ${GRIP_URDF_NO_MIMIC}
+# Gripper meshes: point to the bundled copies in isaac/gripper_meshes/
+# (These are committed to the repo so no external clone is needed.)
+sed -i "s|package://onrobot_rg2ft_description/meshes/|file:///workspace/isaac/gripper_meshes/|g" ${GRIP_URDF_NO_MIMIC}
 
 # ---- Step 4: M1013 URDF — resolve mesh paths, strip closing </robot> ----
 sed "s|package://dsr_description2/|file://${DESC_DIR}/|g" \

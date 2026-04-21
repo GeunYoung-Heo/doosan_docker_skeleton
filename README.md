@@ -537,6 +537,9 @@ doosan_docker_skeleton/
 ├── isaac/
 │   ├── m1013_ros2_bridge.py             # Isaac Sim 브리지: combined URDF 로드 + 팔/그리퍼 동시 제어
 │   ├── m1013_rg2ft_combined.urdf        # pre-generated combined URDF (M1013 + RG2-FT)
+│   ├── gripper_meshes/                  # RG2-FT STL 메시 (repo에 번들, 외부 clone 불필요)
+│   │   ├── visual/    (9 STL)
+│   │   └── collision/ (9 STL)
 │   ├── gripper_standalone_test.py       # 그리퍼 단독 테스트 (Phase 1 검증용)
 │   └── m1013_gripper_test.py            # 팔+그리퍼 통합 테스트 (Phase 2 검증용)
 ├── scripts/
