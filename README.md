@@ -29,10 +29,10 @@ source /ros2_ws/install/setup.bash
 
 # 그리퍼 열기
 ros2 service call /onrobot_rg2_ft_node/set_gripper \
-    onrobot_rg2_ft/srv/SetGripper "{width: 110.0, force: 20.0}"
+    onrobot_rg2_ft/srv/SetGripper "{width: 110.0, force: 5.0}"
 
-# 팔 이동
-python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.55
+# 팔 이동 (안전한 workspace)
+python3 /ros2_ws/src/moveit_pose_test.py --xyz -0.45 0.0 0.55 --cartesian
 ```
 
 ---
@@ -201,15 +201,15 @@ ros2 topic echo /onrobot_rg2_ft_node/state
 ```bash
 # 완전히 열기 (110 mm, 20 N)
 ros2 service call /onrobot_rg2_ft_node/set_gripper \
-    onrobot_rg2_ft/srv/SetGripper "{width: 110.0, force: 20.0}"
+    onrobot_rg2_ft/srv/SetGripper "{width: 110.0, force: 5.0}"
 
 # 물체 파지 (그리퍼가 물체에 닿으면 자동 정지, gripped: True)
 ros2 service call /onrobot_rg2_ft_node/set_gripper \
-    onrobot_rg2_ft/srv/SetGripper "{width: 0.0, force: 30.0}"
+    onrobot_rg2_ft/srv/SetGripper "{width: 0.0, force: 5.0}"
 
 # 중간 위치 (60 mm, 약한 힘)
 ros2 service call /onrobot_rg2_ft_node/set_gripper \
-    onrobot_rg2_ft/srv/SetGripper "{width: 60.0, force: 10.0}"
+    onrobot_rg2_ft/srv/SetGripper "{width: 60.0, force: 5.0}"
 ```
 
 ### MoveIt 웨이포인트 제어
@@ -222,17 +222,18 @@ ros2 service call /onrobot_rg2_ft_node/set_gripper \
 # 현재 관절 각도 확인 (라디안 → 수동으로 도 환산)
 ros2 topic echo /joint_states --once
 
-# 홈 포지션 (모든 관절 0°)
-python3 /ros2_ws/src/moveit_pose_test.py --joints 0 0 0 0 0 0
+# 안전한 작업 시작 자세 (권장 홈)
+python3 /ros2_ws/src/moveit_pose_test.py --joints 0 0 -90 0 -90 0
 
-# 예시: J3=90°, J5=90°
-python3 /ros2_ws/src/moveit_pose_test.py --joints 0 0 90 0 90 0
+# 베이스 회전 (J1 = 30°)
+python3 /ros2_ws/src/moveit_pose_test.py --joints 30 0 -90 0 -90 0
 
-# 자유 포즈
-python3 /ros2_ws/src/moveit_pose_test.py --joints 30 -20 60 10 80 -15
+# 팁을 약간 들어올리기 (J2 조정)
+python3 /ros2_ws/src/moveit_pose_test.py --joints 0 -20 -70 0 -90 0
 ```
 
 > 실물 첫 동작 전에는 반드시 현재 관절 각도를 확인하고 목표를 설정할 것.  
+> `0 0 -90 0 -90 0`이 안전한 기본 자세 — 팁이 아래로 향하고 팔이 접힌 상태.  
 > 큰 각도 변화는 충돌 위험이 있다. 속도는 최대 30%로 제한되어 있다.
 
 #### Cartesian 제어 (작업 공간, OMPL)
@@ -240,12 +241,15 @@ python3 /ros2_ws/src/moveit_pose_test.py --joints 30 -20 60 10 80 -15
 OMPL planner로 목표 pose까지 이동. 경로가 직선이 아닐 수 있음 (팔이 크게 자세를 바꿀 수 있음).
 
 ```bash
-# 특정 xyz 위치로 이동 (팁 아래 방향)
-python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.55
+# 안전한 작업 영역 상단 (팁 아래 방향)
+python3 /ros2_ws/src/moveit_pose_test.py --xyz -0.45 0.0 0.55
 
 # 자세 없이 위치만 (MoveIt이 자세 자동 선택)
-python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.6 0.0 0.3 --position-only
+python3 /ros2_ws/src/moveit_pose_test.py --xyz -0.45 0.0 0.30 --position-only
 ```
+
+> **안전한 workspace:** `x ≈ -0.45`, `y ∈ [-0.2, 0.2]`, `z ∈ [0.30, 0.55]`  
+> 이 범위를 벗어난 좌표는 실물에서 먼저 시뮬로 검증 후 사용할 것.
 
 #### 직선 경로 제어 (Cartesian straight-line) ⭐ 추천
 
@@ -253,12 +257,12 @@ python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.6 0.0 0.3 --position-only
 Pick-and-place, 수직 접근/후퇴 등 대부분의 작업에 적합.
 
 ```bash
-# 직선으로 이동
-python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.40 --cartesian
+# 직선으로 이동 (작업 영역 상단 접근)
+python3 /ros2_ws/src/moveit_pose_test.py --xyz -0.45 0.0 0.40 --cartesian
 
 # 속도 조절 (기본: 0.3 = 최대 속도의 30%)
-python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.40 --cartesian --vel-scale 0.1   # 느리게 (10%)
-python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.40 --cartesian --vel-scale 0.5   # 빠르게 (50%)
+python3 /ros2_ws/src/moveit_pose_test.py --xyz -0.45 0.0 0.40 --cartesian --vel-scale 0.1   # 느리게 (10%)
+python3 /ros2_ws/src/moveit_pose_test.py --xyz -0.45 0.0 0.40 --cartesian --vel-scale 0.5   # 빠르게 (50%)
 ```
 
 **`--vel-scale` 참고:**
@@ -277,37 +281,37 @@ python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.40 --cartesian --vel-s
 
 ```bash
 # 1. 작업 시작 자세
-python3 /ros2_ws/src/moveit_pose_test.py --joints 0 0 90 0 90 0
+python3 /ros2_ws/src/moveit_pose_test.py --joints 0 0 -90 0 -90 0
 
 # 2. 그리퍼 열기
 ros2 service call /onrobot_rg2_ft_node/set_gripper \
-    onrobot_rg2_ft/srv/SetGripper "{width: 110.0, force: 20.0}"
+    onrobot_rg2_ft/srv/SetGripper "{width: 110.0, force: 5.0}"
 
 # 3. 물체 위로 직선 접근
-python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.40 --cartesian
+python3 /ros2_ws/src/moveit_pose_test.py --xyz -0.45 0.0 0.40 --cartesian
 
 # 4. 아래로 내려가기 (천천히)
-python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.30 --cartesian --vel-scale 0.1
+python3 /ros2_ws/src/moveit_pose_test.py --xyz -0.45 0.0 0.35 --cartesian --vel-scale 0.1
 
 # 5. 파지
 ros2 service call /onrobot_rg2_ft_node/set_gripper \
-    onrobot_rg2_ft/srv/SetGripper "{width: 0.0, force: 25.0}"
+    onrobot_rg2_ft/srv/SetGripper "{width: 0.0, force: 5.0}"
 
 # 6. 들어올리기
-python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.55 --cartesian
+python3 /ros2_ws/src/moveit_pose_test.py --xyz -0.45 0.0 0.55 --cartesian
 
 # 7. 옆으로 이동
-python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.2 0.55 --cartesian
+python3 /ros2_ws/src/moveit_pose_test.py --xyz -0.45 0.2 0.55 --cartesian
 
 # 8. 내려놓기 (천천히)
-python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.2 0.30 --cartesian --vel-scale 0.1
+python3 /ros2_ws/src/moveit_pose_test.py --xyz -0.45 0.2 0.30 --cartesian --vel-scale 0.1
 
 # 9. 놓기
 ros2 service call /onrobot_rg2_ft_node/set_gripper \
-    onrobot_rg2_ft/srv/SetGripper "{width: 110.0, force: 20.0}"
+    onrobot_rg2_ft/srv/SetGripper "{width: 110.0, force: 5.0}"
 
 # 10. 위로 빠지기
-python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.2 0.55 --cartesian
+python3 /ros2_ws/src/moveit_pose_test.py --xyz -0.45 0.2 0.55 --cartesian
 ```
 
 > 위 명령은 시뮬과 실물에서 **동일하게** 동작한다.
@@ -362,19 +366,19 @@ bash docker/container.sh enter
 source /opt/ros/humble/setup.bash
 source /ros2_ws/install/setup.bash
 
-# 관절 공간 목표 (도 단위)
-python3 /ros2_ws/src/moveit_pose_test.py --joints 0 0 90 0 90 0
+# 관절 공간 목표 (도 단위) — 안전한 작업 시작 자세
+python3 /ros2_ws/src/moveit_pose_test.py --joints 0 0 -90 0 -90 0
 
-# Cartesian 목표
-python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.55
+# Cartesian 목표 (실물과 동일한 safe workspace)
+python3 /ros2_ws/src/moveit_pose_test.py --xyz -0.45 0.0 0.55 --cartesian
 
 # 그리퍼 닫기 (실물과 동일한 service call)
 ros2 service call /onrobot_rg2_ft_node/set_gripper \
-    onrobot_rg2_ft/srv/SetGripper "{width: 0.0, force: 25.0}"
+    onrobot_rg2_ft/srv/SetGripper "{width: 0.0, force: 5.0}"
 
 # 그리퍼 열기
 ros2 service call /onrobot_rg2_ft_node/set_gripper \
-    onrobot_rg2_ft/srv/SetGripper "{width: 110.0, force: 20.0}"
+    onrobot_rg2_ft/srv/SetGripper "{width: 110.0, force: 5.0}"
 
 # 그리퍼 상태 확인
 ros2 topic echo /onrobot_rg2_ft_node/state --once
@@ -383,12 +387,12 @@ ros2 topic echo /onrobot_rg2_ft_node/state --once
 ### 팔 + 그리퍼 연계 시퀀스 (pick-and-place 예시)
 
 ```bash
-python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.35         # 물체 위치로
+python3 /ros2_ws/src/moveit_pose_test.py --xyz -0.45 0.0 0.35 --cartesian   # 물체 위치로
 ros2 service call /onrobot_rg2_ft_node/set_gripper \
-    onrobot_rg2_ft/srv/SetGripper "{width: 0.0, force: 25.0}"        # 파지
-python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.55         # 들어올리기
+    onrobot_rg2_ft/srv/SetGripper "{width: 0.0, force: 5.0}"                # 파지
+python3 /ros2_ws/src/moveit_pose_test.py --xyz -0.45 0.0 0.55 --cartesian   # 들어올리기
 ros2 service call /onrobot_rg2_ft_node/set_gripper \
-    onrobot_rg2_ft/srv/SetGripper "{width: 110.0, force: 20.0}"      # 놓기
+    onrobot_rg2_ft/srv/SetGripper "{width: 110.0, force: 5.0}"              # 놓기
 ```
 
 > 위 명령은 실물 로봇에서도 **그대로** 동작한다.
@@ -573,11 +577,11 @@ doosan_docker_skeleton/
 ```bash
 # 시뮬에서 기록
 python3 /ros2_ws/src/trajectory_recorder.py -o sim_traj.csv
-python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.55
+python3 /ros2_ws/src/moveit_pose_test.py --xyz -0.45 0.0 0.55 --cartesian
 
 # 실물에서 기록 (real_bringup 실행 후)
 python3 /ros2_ws/src/trajectory_recorder.py -o real_traj.csv
-python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.55
+python3 /ros2_ws/src/moveit_pose_test.py --xyz -0.45 0.0 0.55 --cartesian
 
 # 비교
 python3 trajectory_compare.py sim_traj.csv real_traj.csv \
