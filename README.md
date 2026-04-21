@@ -316,6 +316,37 @@ python3 /ros2_ws/src/moveit_pose_test.py --xyz -0.45 0.2 0.55 --cartesian
 
 > 위 명령은 시뮬과 실물에서 **동일하게** 동작한다.
 
+### 다중 waypoint 시나리오 자동 실행 (Python runner)
+
+bash로 여러 `moveit_pose_test.py` 호출을 체이닝하면 매번 rclpy 노드가 생성/소멸되어 Fast DDS discovery 타이밍 이슈(`failed to send response to /compute_cartesian_path`)가 가끔 발생한다. 연속된 시나리오는 **단일 Python 노드**로 실행하는 것이 안정적이다.
+
+예제 스크립트: [scripts/scenarios/cube_stacking.py](scripts/scenarios/cube_stacking.py)
+
+```bash
+# 실물 또는 시뮬 bringup이 실행 중인 상태에서
+python3 /ros2_ws/src/scenarios/cube_stacking.py
+```
+
+동일한 스크립트가 **실물과 Isaac Sim 양쪽에서 수정 없이** 동작한다 (서비스/액션 인터페이스가 완전히 동일).
+
+**구조:**
+
+```python
+class ScenarioRunner(Node):
+    # __init__에서 클라이언트를 1회만 생성 (DDS participant 1개로 고정)
+    self._move_action    = ActionClient(self, MoveGroup, "/move_action")
+    self._exec_action    = ActionClient(self, ExecuteTrajectory, "/execute_trajectory")
+    self._cart_client    = self.create_client(GetCartesianPath, "/compute_cartesian_path")
+    self._gripper_client = self.create_client(SetGripper, "/onrobot_rg2_ft_node/set_gripper")
+
+    # 시나리오 내내 클라이언트 재사용
+    def move_joints(self, joints_deg): ...
+    def move_cartesian(self, xyz):     ...
+    def set_gripper(self, width, force, settle_sec): ...
+```
+
+커스텀 시나리오를 만들 때는 `cube_stacking.py`를 복사하고 `run_scenario()` 내부만 수정하면 된다. 중간 실패 시 `RuntimeError`로 즉시 중단되며 어느 스텝에서 실패했는지 라벨이 출력된다.
+
 ### real_bringup.launch.py 전체 인수
 
 | 인수 | 기본값 | 설명 |
@@ -556,6 +587,8 @@ doosan_docker_skeleton/
 │   ├── moveit_pose_test.py              # Cartesian / Joint 목표 테스트
 │   ├── trajectory_recorder.py           # 궤적 기록
 │   ├── trajectory_compare.py            # 시뮬-실물 궤적 비교
+│   ├── scenarios/                       # 다중 waypoint 시나리오 (단일 rclpy 노드)
+│   │   └── cube_stacking.py             # pick-and-place 예시
 │   └── onrobot_rg2_ft/                  # ROS 2 그리퍼 드라이버 패키지
 │       ├── package.xml
 │       ├── CMakeLists.txt
@@ -617,6 +650,7 @@ python3 trajectory_compare.py sim_traj.csv real_traj.csv \
 | `PLANNING_FAILED` / `NO_IK_SOLUTION` | 목표 포즈 도달 불가 | `--position-only` 추가 또는 xyz 조정 |
 | 컨트롤러 `inactive` | 아직 초기화 중 | `You can start planning now!` 대기 |
 | `dsr_moveit_controller` Failed to activate | velocity 인터페이스 충돌 (시뮬) | `dsr_moveit_controller_sim.yaml` 이 launch에 포함되어 있는지 확인 |
+| `FAIL: no response from compute_cartesian_path` (간헐적) | Fast DDS discovery 타이밍 이슈 (노드 생성/소멸 반복 시) | 연속 실행은 `scripts/scenarios/` Python runner 사용 |
 
 ### 빌드
 
