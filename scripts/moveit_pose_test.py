@@ -195,13 +195,23 @@ def execute_cartesian_path(node, xyz, quat, max_step, vel_scale):
     req.waypoints = [target_pose]
 
     print("[moveit_test] computing Cartesian path ...", flush=True)
+    # Fast DDS discovery workaround: small delay before service call
+    time.sleep(0.5)
     t0 = time.time()
-    future = cart_client.call_async(req)
-    rclpy.spin_until_future_complete(node, future, timeout_sec=15.0)
-    resp = future.result()
+
+    # Retry up to 3x on DDS response timeout (Fast DDS "failed to send response")
+    resp = None
+    for attempt in range(3):
+        future = cart_client.call_async(req)
+        rclpy.spin_until_future_complete(node, future, timeout_sec=30.0)
+        resp = future.result()
+        if resp is not None:
+            break
+        print(f"[moveit_test] attempt {attempt+1}/3 timed out, retrying ...", flush=True)
+        time.sleep(1.0)
 
     if resp is None:
-        print("[moveit_test] FAIL: no response from compute_cartesian_path")
+        print("[moveit_test] FAIL: no response from compute_cartesian_path after 3 retries")
         return 8
 
     if resp.fraction < 0.99:
