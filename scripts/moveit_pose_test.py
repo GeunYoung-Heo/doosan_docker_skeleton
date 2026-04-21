@@ -1,19 +1,21 @@
 #!/usr/bin/env python3
-"""MoveIt goal test — Cartesian pose or joint-space.
+"""MoveIt goal test — Cartesian pose, joint-space, or straight-line path.
 
 Usage (inside the doosan_isaac container):
     source /opt/ros/humble/setup.bash
     source /ros2_ws/install/setup.bash
 
-    # Cartesian pose goal (default)
-    python3 /ros2_ws/src/moveit_pose_test.py                    # default pose
-    python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.5 0.0 0.6  # custom xyz
+    # Cartesian pose goal (OMPL — may take indirect path)
+    python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.5 0.0 0.6
     python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.4 0.2 0.5 --quat 0 1 0 0
     python3 /ros2_ws/src/moveit_pose_test.py --position-only
 
+    # Straight-line path (EE moves in a line — predictable, no big detours)
+    python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.35 --cartesian
+    python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.55 --cartesian
+
     # Joint-space goal (degrees — same convention as doosan move_joint service)
     python3 /ros2_ws/src/moveit_pose_test.py --joints 0 0 90 0 90 0
-    python3 /ros2_ws/src/moveit_pose_test.py --joints 30 -20 60 10 80 -15
 """
 
 import argparse
@@ -25,7 +27,7 @@ import rclpy
 from rclpy.action import ActionClient
 
 from geometry_msgs.msg import Point, Pose, Quaternion, Vector3
-from moveit_msgs.action import MoveGroup
+from moveit_msgs.action import MoveGroup, ExecuteTrajectory
 from moveit_msgs.msg import (
     Constraints,
     JointConstraint,
@@ -33,8 +35,11 @@ from moveit_msgs.msg import (
     OrientationConstraint,
     PlanningOptions,
     PositionConstraint,
+    RobotState,
     WorkspaceParameters,
 )
+from moveit_msgs.srv import GetCartesianPath
+from sensor_msgs.msg import JointState
 from shape_msgs.msg import SolidPrimitive
 
 
@@ -142,6 +147,116 @@ def build_joint_goal(joint_degrees):
     return goal
 
 
+def execute_cartesian_path(node, xyz, quat, max_step, vel_scale):
+    """Plan a straight-line Cartesian path to target and execute it.
+
+    Uses /compute_cartesian_path service + /execute_trajectory action.
+    The EE moves in a straight line — no big arm reconfigurations.
+    """
+    # 1) Get current joint state
+    print("[moveit_test] waiting for /joint_states ...", flush=True)
+    joint_state_msg = None
+    def js_cb(msg):
+        nonlocal joint_state_msg
+        joint_state_msg = msg
+    sub = node.create_subscription(JointState, "/joint_states", js_cb, 1)
+    for _ in range(50):
+        rclpy.spin_once(node, timeout_sec=0.1)
+        if joint_state_msg:
+            break
+    node.destroy_subscription(sub)
+    if not joint_state_msg:
+        print("[moveit_test] FAIL: no /joint_states received")
+        return 6
+
+    # 2) Build target pose
+    target_pose = Pose()
+    target_pose.position = Point(x=float(xyz[0]), y=float(xyz[1]), z=float(xyz[2]))
+    target_pose.orientation = Quaternion(
+        x=float(quat[0]), y=float(quat[1]), z=float(quat[2]), w=float(quat[3])
+    )
+
+    # 3) Call /compute_cartesian_path service
+    cart_client = node.create_client(GetCartesianPath, "/compute_cartesian_path")
+    print("[moveit_test] waiting for /compute_cartesian_path ...", flush=True)
+    if not cart_client.wait_for_service(timeout_sec=10.0):
+        print("[moveit_test] FAIL: /compute_cartesian_path not available")
+        return 7
+
+    req = GetCartesianPath.Request()
+    req.header.frame_id = PLANNING_FRAME
+    req.group_name = GROUP
+    req.link_name = TIP_LINK
+    req.max_step = max_step
+    req.jump_threshold = 0.0  # disabled
+    req.avoid_collisions = True
+    req.start_state = RobotState()
+    req.start_state.joint_state = joint_state_msg
+    req.waypoints = [target_pose]
+
+    print("[moveit_test] computing Cartesian path ...", flush=True)
+    t0 = time.time()
+    future = cart_client.call_async(req)
+    rclpy.spin_until_future_complete(node, future, timeout_sec=15.0)
+    resp = future.result()
+
+    if resp is None:
+        print("[moveit_test] FAIL: no response from compute_cartesian_path")
+        return 8
+
+    if resp.fraction < 0.99:
+        print(f"[moveit_test] FAIL: only {resp.fraction*100:.1f}% of path achievable (need ~100%)")
+        return 9
+
+    n_pts = len(resp.solution.joint_trajectory.points)
+    print(f"[moveit_test] path computed: {resp.fraction*100:.0f}% achievable, "
+          f"{n_pts} waypoints", flush=True)
+
+    # 3.5) Scale trajectory speed
+    # vel_scale=1.0 → original speed, 0.3 → ~3.3x slower, 0.1 → 10x slower
+    if vel_scale > 0 and vel_scale != 1.0:
+        scale_factor = 1.0 / vel_scale
+        for pt in resp.solution.joint_trajectory.points:
+            t_sec = pt.time_from_start.sec + pt.time_from_start.nanosec * 1e-9
+            t_sec *= scale_factor
+            pt.time_from_start.sec = int(t_sec)
+            pt.time_from_start.nanosec = int((t_sec % 1) * 1e9)
+            # Also scale velocities down
+            pt.velocities = [v * vel_scale for v in pt.velocities]
+            pt.accelerations = [a * vel_scale * vel_scale for a in pt.accelerations]
+        print(f"[moveit_test] speed scaled: {vel_scale:.0%} of max", flush=True)
+
+    # 4) Execute via /execute_trajectory action
+    exec_client = ActionClient(node, ExecuteTrajectory, "/execute_trajectory")
+    if not exec_client.wait_for_server(timeout_sec=10.0):
+        print("[moveit_test] FAIL: /execute_trajectory action not available")
+        return 10
+
+    exec_goal = ExecuteTrajectory.Goal()
+    exec_goal.trajectory = resp.solution
+
+    print("[moveit_test] executing straight-line trajectory ...", flush=True)
+    sf = exec_client.send_goal_async(exec_goal)
+    rclpy.spin_until_future_complete(node, sf, timeout_sec=10.0)
+    gh = sf.result()
+    if not gh or not gh.accepted:
+        print("[moveit_test] FAIL: execution rejected")
+        return 11
+
+    rf = gh.get_result_async()
+    rclpy.spin_until_future_complete(node, rf, timeout_sec=60.0)
+    res = rf.result()
+    total = time.time() - t0
+
+    if res and res.result.error_code.val == 1:
+        print(f"[moveit_test] SUCCESS (cartesian) — {total:.2f}s", flush=True)
+        return 0
+    else:
+        code = res.result.error_code.val if res else "?"
+        print(f"[moveit_test] FAIL: execution error {code} ({total:.2f}s)")
+        return 12
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--joints", type=float, nargs=6, default=None,
@@ -153,8 +268,14 @@ def main():
     parser.add_argument("--quat", type=float, nargs=4, default=list(DEFAULT_QUAT),
                         metavar=("QX", "QY", "QZ", "QW"),
                         help=f"Target orientation (xyzw) for {TIP_LINK}")
+    parser.add_argument("--cartesian", action="store_true",
+                        help="Use straight-line Cartesian path (EE moves in a line, no detours)")
     parser.add_argument("--position-only", action="store_true",
                         help="Only constrain position; let MoveIt pick any orientation")
+    parser.add_argument("--max-step", type=float, default=0.005,
+                        help="Cartesian path resolution in meters (default: 5mm)")
+    parser.add_argument("--vel-scale", type=float, default=0.3,
+                        help="Velocity scaling factor (default: 0.3)")
     parser.add_argument("--position-tol", type=float, default=0.01,
                         help="Position constraint tolerance radius [m]")
     parser.add_argument("--orient-tol", type=float, default=0.1,
@@ -166,19 +287,30 @@ def main():
     is_joint_goal = args.joints is not None
 
     if is_joint_goal:
-        print(f"[moveit_test] joint goal (deg): {args.joints}", flush=True)
+        print(f"[moveit_test] JOINT goal (deg): {args.joints}", flush=True)
+    elif args.cartesian:
+        print(f"[moveit_test] CARTESIAN straight-line to xyz={args.xyz}", flush=True)
+        print(f"[moveit_test] quat={args.quat}, max_step={args.max_step}m", flush=True)
     else:
-        print(f"[moveit_test] pose goal xyz={args.xyz}", flush=True)
+        print(f"[moveit_test] OMPL pose goal xyz={args.xyz}", flush=True)
         if args.position_only:
             print(f"[moveit_test] orientation: FREE", flush=True)
         else:
             print(f"[moveit_test] quat={args.quat}", flush=True)
-    print(f"[moveit_test] group={GROUP}, action={args.action}", flush=True)
 
     rclpy.init()
     node = rclpy.create_node("moveit_test")
-    client = ActionClient(node, MoveGroup, args.action)
 
+    # --- Cartesian straight-line path ---
+    if args.cartesian and not is_joint_goal:
+        rc = execute_cartesian_path(
+            node, args.xyz, args.quat, args.max_step, args.vel_scale,
+        )
+        rclpy.shutdown()
+        return rc
+
+    # --- OMPL joint or pose goal ---
+    client = ActionClient(node, MoveGroup, args.action)
     print(f"[moveit_test] waiting for {args.action} ...", flush=True)
     if not client.wait_for_server(timeout_sec=15.0):
         print(f"[moveit_test] FAIL: action server {args.action} not available")
@@ -215,7 +347,6 @@ def main():
         return 4
 
     code = res.result.error_code.val
-    # moveit_msgs.msg.MoveItErrorCodes.SUCCESS = 1
     if code == 1:
         print(f"[moveit_test] SUCCESS — total time {total:.2f}s", flush=True)
         rc = 0
