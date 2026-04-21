@@ -27,6 +27,7 @@ or with a different model:
 from launch import LaunchDescription
 from launch.actions import (
     DeclareLaunchArgument,
+    ExecuteProcess,
     OpaqueFunction,
     RegisterEventHandler,
     TimerAction,
@@ -167,6 +168,14 @@ def generate_launch_description():
         )
     )
 
+    # Gripper sim node — provides /onrobot_rg2_ft_node/set_gripper service
+    # (same interface as the real gripper_node.py) and publishes finger target
+    # on /gripper_finger_target for the Isaac Sim bridge.
+    gripper_sim = ExecuteProcess(
+        cmd=["python3", "/ros2_ws/src/gripper_sim_node.py"],
+        output="screen",
+    )
+
     return LaunchDescription(
         args
         + [
@@ -175,5 +184,6 @@ def generate_launch_description():
             delay_jsb_after_control,
             delay_jtc_after_jsb,
             delay_move_group_after_jtc,
+            gripper_sim,
         ]
     )

@@ -8,6 +8,9 @@ third_party/doosan-robot2/
 # doosan-robot2). Kept optional for future URDF/CuRobo experiments — clone it
 # manually if you need it.
 third_party/doosan-robot-isaac-driver/
+# OnRobot RG2-FT URDF source — cloned at runtime for mesh files.
+# The combined URDF is pre-generated and committed at isaac/m1013_rg2ft_combined.urdf
+third_party/OnRobot-RG2FT-ROS/
 
 # ---- Lab reference material (each site has its own copy) ----
 reference/

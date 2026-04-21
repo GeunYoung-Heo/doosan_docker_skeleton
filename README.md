@@ -280,7 +280,10 @@ ros2 service call /onrobot_rg2_ft_node/set_gripper \
 
 ## 시뮬레이션 사용 (Isaac Sim)
 
-### Terminal 1 — MoveIt + mock_components
+M1013 팔 + OnRobot RG2-FT 그리퍼가 하나의 combined URDF로 Isaac Sim에 로드된다.  
+**실물과 완전히 동일한 ROS 2 명령**으로 팔과 그리퍼를 동시에 제어할 수 있다.
+
+### Terminal 1 — MoveIt + mock_components + 그리퍼 sim 노드
 
 ```bash
 bash docker/container.sh enter
@@ -289,7 +292,9 @@ source /ros2_ws/install/setup.bash
 ros2 launch /ros2_ws/src/m1013_sim_bringup.launch.py
 ```
 
-`You can start planning now!` 까지 약 30초 대기.
+정상 기동 시 두 줄을 확인:
+- `Sim gripper ready. width=110 mm (open)` ← 그리퍼 sim 노드
+- `You can start planning now!` ← MoveIt
 
 ### Terminal 2 — Isaac Sim 뷰포트
 
@@ -298,29 +303,62 @@ bash docker/container.sh enter
 /isaac-sim/python.sh /workspace/isaac/m1013_ros2_bridge.py
 ```
 
-창이 열리면 M1013 PhysX 아티큘레이션이 `/joint_states`를 따라 움직인다.  
-헤드리스 실행: `--headless` 옵션 추가.
+창이 열리면 M1013 + RG2-FT 그리퍼가 하나의 아티큘레이션으로 렌더링된다.  
+팔은 `/joint_states`를, 그리퍼는 `/gripper_finger_target`을 따라 움직인다.
 
-### Terminal 3 — 동작 테스트
+### Terminal 3 — 동작 테스트 (실물과 동일한 명령)
 
 ```bash
 bash docker/container.sh enter
 source /opt/ros/humble/setup.bash
 source /ros2_ws/install/setup.bash
 
-# 홈 포지션 (모든 관절 0°)
-python3 /ros2_ws/src/moveit_backend_smoketest.py
-
-# 관절 공간 목표 (도 단위, Doosan move_joint 서비스와 동일 단위계)
+# 관절 공간 목표 (도 단위)
 python3 /ros2_ws/src/moveit_pose_test.py --joints 0 0 90 0 90 0
-python3 /ros2_ws/src/moveit_pose_test.py --joints 30 -20 60 10 80 -15
 
 # Cartesian 목표
 python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.55
-python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.4 0.3 0.4
+
+# 그리퍼 닫기 (실물과 동일한 service call)
+ros2 service call /onrobot_rg2_ft_node/set_gripper \
+    onrobot_rg2_ft/srv/SetGripper "{width: 0.0, force: 25.0}"
+
+# 그리퍼 열기
+ros2 service call /onrobot_rg2_ft_node/set_gripper \
+    onrobot_rg2_ft/srv/SetGripper "{width: 110.0, force: 20.0}"
+
+# 그리퍼 상태 확인
+ros2 topic echo /onrobot_rg2_ft_node/state --once
 ```
 
-`--joints`는 도 단위로 입력하면 스크립트가 라디안으로 변환해 `/move_action`에 관절 공간 목표를 전송한다. 시뮬/실물 모두 동일한 명령 사용.
+### 팔 + 그리퍼 연계 시퀀스 (pick-and-place 예시)
+
+```bash
+python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.35         # 물체 위치로
+ros2 service call /onrobot_rg2_ft_node/set_gripper \
+    onrobot_rg2_ft/srv/SetGripper "{width: 0.0, force: 25.0}"        # 파지
+python3 /ros2_ws/src/moveit_pose_test.py --xyz 0.45 0.0 0.55         # 들어올리기
+ros2 service call /onrobot_rg2_ft_node/set_gripper \
+    onrobot_rg2_ft/srv/SetGripper "{width: 110.0, force: 20.0}"      # 놓기
+```
+
+> 위 명령은 실물 로봇에서도 **그대로** 동작한다.
+
+### 시뮬레이션 그리퍼 참고사항
+
+- **width**: mm 단위, 0(완전 닫힘)~110(완전 열림). 내부에서 `finger_joint` 라디안으로 변환.
+- **force**: 로그에만 기록됨. 시뮬에서는 물리적 접촉 힘을 적용하지 않음 (추후 scene 물체 추가 시 구현 가능).
+- **gripped**: `width < 5 mm`이면 `True` 반환 (단순 threshold 판정).
+- 시각화: Isaac Sim에서 그리퍼 손가락이 실시간으로 열리고 닫힘.
+
+### combined URDF 재생성 (마운트 각도 수정이 필요한 경우)
+
+```bash
+# 컨테이너 안에서
+bash /ros2_ws/src/generate_combined_urdf.sh
+```
+
+`generate_combined_urdf.sh` 내부의 `MOUNT_ORIGIN` 변수를 수정하면 tool0 ↔ gripper 간 회전/오프셋을 조정할 수 있다. 재생성 후 `isaac/m1013_rg2ft_combined.urdf`를 커밋하면 된다.
 
 ---
 
@@ -448,15 +486,20 @@ doosan_docker_skeleton/
 │   ├── docker_build.sh
 │   └── run_emulator.sh         # 프로토콜 테스트용 (시뮬에서는 미사용)
 ├── isaac/
-│   └── m1013_ros2_bridge.py    # Isaac Sim 독립 앱: USD 로드 + ROS 2 브리지
+│   ├── m1013_ros2_bridge.py             # Isaac Sim 브리지: combined URDF 로드 + 팔/그리퍼 동시 제어
+│   ├── m1013_rg2ft_combined.urdf        # pre-generated combined URDF (M1013 + RG2-FT)
+│   ├── gripper_standalone_test.py       # 그리퍼 단독 테스트 (Phase 1 검증용)
+│   └── m1013_gripper_test.py            # 팔+그리퍼 통합 테스트 (Phase 2 검증용)
 ├── scripts/
 │   ├── real_bringup.launch.py           # 실물: 팔(Doosan) + 그리퍼 동시 기동
-│   ├── m1013_sim_bringup.launch.py      # 시뮬: MoveIt + mock_components
+│   ├── m1013_sim_bringup.launch.py      # 시뮬: MoveIt + mock_components + gripper sim
+│   ├── generate_combined_urdf.sh        # combined URDF 재생성 스크립트
+│   ├── gripper_sim_node.py              # 시뮬 그리퍼 mock 노드 (실물과 동일 인터페이스)
 │   ├── dsr_moveit_controller_sim.yaml   # JTC 명령 인터페이스 오버라이드
 │   ├── moveit_backend_smoketest.py      # 관절 공간 목표 테스트
-│   ├── moveit_pose_test.py              # Cartesian 목표 테스트
-│   ├── trajectory_recorder.py          # 궤적 기록
-│   ├── trajectory_compare.py           # 시뮬-실물 궤적 비교
+│   ├── moveit_pose_test.py              # Cartesian / Joint 목표 테스트
+│   ├── trajectory_recorder.py           # 궤적 기록
+│   ├── trajectory_compare.py            # 시뮬-실물 궤적 비교
 │   └── onrobot_rg2_ft/                  # ROS 2 그리퍼 드라이버 패키지
 │       ├── package.xml
 │       ├── CMakeLists.txt

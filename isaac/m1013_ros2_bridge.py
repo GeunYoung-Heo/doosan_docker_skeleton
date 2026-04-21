@@ -1,63 +1,48 @@
 #!/usr/bin/env python3
 """
-Doosan M1013 + Isaac Sim 4.5 + ROS 2 Humble bridge (standalone application).
+Doosan M1013 + OnRobot RG2-FT Isaac Sim bridge.
 
-Pipeline:
-    DRCF Emulator (host:12345)
-      -> doosan-robot2 dsr_hardware2 ROS 2 driver
-      -> publishes sensor_msgs/JointState on /joint_states
-      -> this script's Action Graph SubscribeJointState node
-      -> ArticulationController applies to imported M1013 prim
-      -> Isaac Sim viewport reflects DRCF state.
+Loads the combined M1013+RG2-FT URDF as a single articulation.
+- Arm (joint_1~6): driven by ROS 2 /joint_states via OmniGraph
+- Gripper: driven by Python mimic logic each tick.
+  A separate gripper_sim_node (ROS 2) will publish target finger position
+  on /gripper_finger_target; this bridge subscribes and applies it.
+  (Until gripper_sim_node is running, gripper stays at open position.)
 
-Run inside the unified container:
+Run:
     /isaac-sim/python.sh /workspace/isaac/m1013_ros2_bridge.py
-or with the host-mounted path:
-    /isaac-sim/python.sh /ros2_ws/src/third_party/.../m1013_ros2_bridge.py
-
-Headless variant (no GUI): pass --headless.
 """
 
 import argparse
+import math
 import sys
-
 
 def parse_args():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--headless", action="store_true", help="Run Isaac Sim without GUI")
+    parser.add_argument("--headless", action="store_true")
     parser.add_argument(
-        "--usd",
-        default="/ros2_ws/src/third_party/doosan-robot2/dsr_description2/usd/m1013.usd",
-        help="Path to the official Doosan M1013 USD inside the container",
+        "--urdf",
+        default="/workspace/isaac/m1013_rg2ft_combined.urdf",
+        help="Path to the combined M1013+RG2-FT URDF",
     )
     parser.add_argument(
         "--topic",
         default="joint_states",
-        help="ROS 2 topic to subscribe for joint commands (default: joint_states)",
+        help="ROS 2 topic for arm joint states (from MoveIt/mock)",
     )
     parser.add_argument(
-        "--robot-prim",
-        default="/World/m1013",
-        help="Stage path under which the M1013 articulation will be placed",
+        "--gripper-topic",
+        default="gripper_finger_target",
+        help="ROS 2 topic for gripper finger target (Float64, radians)",
     )
     return parser.parse_args()
 
-
 ARGS = parse_args()
 
-# ---- 1. SimulationApp must be the FIRST Isaac Sim import ----
 from isaacsim import SimulationApp  # noqa: E402
+simulation_app = SimulationApp({"headless": ARGS.headless, "renderer": "RayTracedLighting"})
 
-simulation_app = SimulationApp(
-    {
-        "headless": ARGS.headless,
-        "renderer": "RayTracedLighting",
-    }
-)
-
-# Now we can import everything else
 import os  # noqa: E402
-
 import carb  # noqa: E402
 import omni  # noqa: E402
 import omni.graph.core as og  # noqa: E402
@@ -66,88 +51,122 @@ import omni.usd  # noqa: E402
 import usdrt.Sdf  # noqa: E402
 from isaacsim.core.api import World  # noqa: E402
 from isaacsim.core.utils.extensions import enable_extension  # noqa: E402
-from isaacsim.core.utils.stage import add_reference_to_stage  # noqa: E402
 from isaacsim.core.utils.viewports import set_camera_view  # noqa: E402
+from pxr import UsdPhysics  # noqa: E402
 
-# ---- 2. Enable the ROS 2 bridge extension ----
-# OmniGraph ros2 nodes are registered when this extension is enabled.
+# ---- Extensions ----
 enable_extension("isaacsim.ros2.bridge")
+enable_extension("isaacsim.asset.importer.urdf")
 
-# Pump frames so the extension registers its OmniGraph node types.
 for _ in range(10):
     simulation_app.update()
 
-# ---- 3. Fresh stage + ground plane ----
+# ---- Stage ----
 omni.usd.get_context().new_stage()
 simulation_app.update()
 
 world = World(stage_units_in_meters=1.0)
 world.scene.add_default_ground_plane()
 set_camera_view(eye=[2.0, 2.0, 1.5], target=[0.0, 0.0, 0.5])
+stage = omni.usd.get_context().get_stage()
 
-# ---- 4. Reference the official Doosan M1013 USD ----
-if not os.path.isfile(ARGS.usd):
-    carb.log_error(f"[bridge] USD not found: {ARGS.usd}")
+# ============================================================
+# 1. Import combined URDF (single articulation: arm + gripper)
+# ============================================================
+if not os.path.isfile(ARGS.urdf):
+    carb.log_error(f"[bridge] URDF not found: {ARGS.urdf}")
     simulation_app.close()
     sys.exit(1)
 
-print(f"[bridge] referencing USD: {ARGS.usd}", flush=True)
-parent_path = ARGS.robot_prim
-add_reference_to_stage(usd_path=ARGS.usd, prim_path=parent_path)
-print(f"[bridge] placed reference at: {parent_path}", flush=True)
+print(f"[bridge] importing combined URDF: {ARGS.urdf}", flush=True)
+from isaacsim.asset.importer.urdf import _urdf  # noqa: E402
 
-# Pump a frame so the reference fully composes onto the stage.
+cfg = _urdf.ImportConfig()
+cfg.merge_fixed_joints = False
+cfg.convex_decomp = False
+cfg.import_inertia_tensor = True
+cfg.fix_base = True
+cfg.distance_scale = 1.0
+cfg.density = 0.0
+cfg.default_drive_type = _urdf.UrdfJointTargetType.JOINT_DRIVE_POSITION
+cfg.default_drive_strength = 1e7
+cfg.default_position_drive_damping = 1e5
+cfg.self_collision = False
+cfg.create_physics_scene = False
+cfg.make_default_prim = False
+
+status, robot_prim_path = omni.kit.commands.execute(
+    "URDFParseAndImportFile", urdf_path=ARGS.urdf, import_config=cfg, dest_path="",
+)
+if not status or not robot_prim_path:
+    carb.log_error(f"[bridge] URDF import failed")
+    simulation_app.close()
+    sys.exit(1)
+
+print(f"[bridge] imported at: {robot_prim_path}", flush=True)
 simulation_app.update()
 
-# Auto-discover the articulation root inside the referenced USD.
-# The USD may put ArticulationRootAPI on a child prim (e.g. /World/m1013/base_0)
-# rather than on our reference Xform.
-from pxr import UsdPhysics  # noqa: E402
+# ============================================================
+# 2. Find articulation root for OmniGraph ArticulationController
+# ============================================================
+# URDF importer places ArticulationRootAPI on the base_link (with fix_base=True).
+# Find it by traversal.
+robot_path = None
+for prim in stage.TraverseAll():
+    if prim.GetPath().HasPrefix(robot_prim_path) and prim.HasAPI(UsdPhysics.ArticulationRootAPI):
+        robot_path = str(prim.GetPath())
+        break
 
-stage = omni.usd.get_context().get_stage()
-parent_prim = stage.GetPrimAtPath(parent_path)
-if not parent_prim.IsValid():
-    carb.log_error(f"[bridge] reference prim invalid: {parent_path}")
-    simulation_app.close()
-    sys.exit(1)
+if not robot_path:
+    # Fallback: use the imported root prim
+    robot_path = robot_prim_path
 
-# Doosan's M1013 USD ships with ArticulationRootAPI applied to a fixed JOINT
-# (`root_joint`), not to a rigid body. The IsaacArticulationController node +
-# omni.physx.tensors plugin then fail with
-#   "Pattern '<path>' did not match any rigid bodies"
-# because PhysX wants the articulation root on a body Xform, not a joint.
-#
-# Fix: move ArticulationRootAPI from the joint onto the first rigid body link
-# (`base_link`) so PhysX registers a valid articulation rooted there.
-stage = omni.usd.get_context().get_stage()
-joint_root = stage.GetPrimAtPath(f"{parent_path}/m1013/root_joint")
-link_root = stage.GetPrimAtPath(f"{parent_path}/m1013/base_link")
+print(f"[bridge] articulation root: {robot_path}", flush=True)
 
-if joint_root.IsValid() and joint_root.HasAPI(UsdPhysics.ArticulationRootAPI):
-    joint_root.RemoveAPI(UsdPhysics.ArticulationRootAPI)
-    print(f"[bridge] removed ArticulationRootAPI from {joint_root.GetPath()}", flush=True)
+# ============================================================
+# 3. Set up gripper joint drives (mimic via Python)
+# ============================================================
+GRIPPER_JOINTS = {
+    "finger_joint":              1.0,
+    "left_inner_knuckle_joint": -1.0,
+    "left_outer_knuckle_joint": -1.0,
+    "left_inner_finger_joint":  -1.0,
+    "right_inner_finger_joint": -1.0,
+    "right_inner_knuckle_joint": 1.0,
+}
 
-if link_root.IsValid():
-    if not link_root.HasAPI(UsdPhysics.ArticulationRootAPI):
-        UsdPhysics.ArticulationRootAPI.Apply(link_root)
-        print(f"[bridge] applied ArticulationRootAPI to {link_root.GetPath()}", flush=True)
-    robot_path = str(link_root.GetPath())
-else:
-    carb.log_error(f"[bridge] base_link not found under {parent_path}/m1013")
-    simulation_app.close()
-    sys.exit(1)
+def find_joint(name):
+    for p in stage.TraverseAll():
+        if p.GetName() == name and "Joint" in p.GetTypeName():
+            return p
+    return None
 
-simulation_app.update()
-print(f"[bridge] articulation robotPath: {robot_path}", flush=True)
+gripper_joint_prims = {}
+for n in GRIPPER_JOINTS:
+    p = find_joint(n)
+    if p:
+        gripper_joint_prims[n] = p
+        d = UsdPhysics.DriveAPI.Get(p, "angular")
+        if not d:
+            d = UsdPhysics.DriveAPI.Apply(p, "angular")
+        d.CreateTypeAttr("force")
+        d.CreateMaxForceAttr(1e10)
+        d.CreateStiffnessAttr(1e7)
+        d.CreateDampingAttr(1e4)
 
-# ---- 5. Build the ROS 2 Action Graph (subscribe + republish + clock) ----
+print(f"[bridge] gripper joints: {len(gripper_joint_prims)}/{len(GRIPPER_JOINTS)}", flush=True)
+
+# Shared state for gripper target (will be updated by ROS subscriber or gripper_sim_node)
+gripper_finger_target_rad = 0.0  # 0 = open, 1.18 = closed
+
+# ============================================================
+# 4. Build ROS 2 Action Graph (arm joint_states + clock)
+# ============================================================
 print("[bridge] building ROS 2 Action Graph", flush=True)
 
-graph_path = "/ActionGraph"
 keys = og.Controller.Keys
-
 og.Controller.edit(
-    {"graph_path": graph_path, "evaluator_name": "execution"},
+    {"graph_path": "/ActionGraph", "evaluator_name": "execution"},
     {
         keys.CREATE_NODES: [
             ("OnTick", "omni.graph.action.OnPlaybackTick"),
@@ -156,7 +175,6 @@ og.Controller.edit(
             ("SubscribeJointState", "isaacsim.ros2.bridge.ROS2SubscribeJointState"),
             ("ArticulationController", "isaacsim.core.nodes.IsaacArticulationController"),
             ("PublishClock", "isaacsim.ros2.bridge.ROS2PublishClock"),
-            # Echo joint state back so other tools (rqt, rviz on host) see Isaac state too.
             ("PublishJointState", "isaacsim.ros2.bridge.ROS2PublishJointState"),
         ],
         keys.CONNECT: [
@@ -164,15 +182,11 @@ og.Controller.edit(
             ("OnTick.outputs:tick", "ArticulationController.inputs:execIn"),
             ("OnTick.outputs:tick", "PublishClock.inputs:execIn"),
             ("OnTick.outputs:tick", "PublishJointState.inputs:execIn"),
-
             ("Context.outputs:context", "SubscribeJointState.inputs:context"),
             ("Context.outputs:context", "PublishClock.inputs:context"),
             ("Context.outputs:context", "PublishJointState.inputs:context"),
-
             ("ReadSimTime.outputs:simulationTime", "PublishClock.inputs:timeStamp"),
             ("ReadSimTime.outputs:simulationTime", "PublishJointState.inputs:timeStamp"),
-
-            # Drive the articulation from the subscriber outputs.
             ("SubscribeJointState.outputs:jointNames", "ArticulationController.inputs:jointNames"),
             ("SubscribeJointState.outputs:positionCommand", "ArticulationController.inputs:positionCommand"),
             ("SubscribeJointState.outputs:velocityCommand", "ArticulationController.inputs:velocityCommand"),
@@ -181,23 +195,64 @@ og.Controller.edit(
         keys.SET_VALUES: [
             ("SubscribeJointState.inputs:topicName", ARGS.topic),
             ("ArticulationController.inputs:robotPath", robot_path),
-            # PublishJointState echoes state on a distinct topic to avoid loops.
             ("PublishJointState.inputs:topicName", "isaac_joint_states"),
             ("PublishJointState.inputs:targetPrim", [usdrt.Sdf.Path(robot_path)]),
         ],
     },
 )
 
-print(f"[bridge] graph ready. Subscribing to '/{ARGS.topic}', echoing on '/isaac_joint_states'", flush=True)
+print(f"[bridge] OmniGraph ready. arm topic: /{ARGS.topic}", flush=True)
 
-# ---- 6. Reset world + main loop ----
+# ============================================================
+# 5. Set up ROS 2 subscriber for gripper finger target
+# ============================================================
+import rclpy  # noqa: E402
+from std_msgs.msg import Float64  # noqa: E402
+
+rclpy.init()
+ros_node = rclpy.create_node("isaac_gripper_bridge")
+
+def gripper_cb(msg):
+    global gripper_finger_target_rad
+    gripper_finger_target_rad = max(0.0, min(1.18, msg.data))
+
+ros_node.create_subscription(Float64, ARGS.gripper_topic, gripper_cb, 10)
+print(f"[bridge] gripper subscriber: /{ARGS.gripper_topic} (Float64, rad)", flush=True)
+
+# ============================================================
+# 6. Main loop
+# ============================================================
 world.reset()
+
+try:
+    omni.timeline.get_timeline_interface().play()
+    print("[bridge] timeline: play", flush=True)
+except Exception as e:
+    print(f"[bridge] timeline play failed: {e}", flush=True)
 
 print("[bridge] entering main loop. Ctrl-C to quit.", flush=True)
 try:
     while simulation_app.is_running():
         world.step(render=True)
+
+        # Pump ROS 2 callbacks (gripper target updates)
+        rclpy.spin_once(ros_node, timeout_sec=0.0)
+
+        # Apply gripper mimic drives each tick
+        for name, ratio in GRIPPER_JOINTS.items():
+            p = gripper_joint_prims.get(name)
+            if p:
+                d = UsdPhysics.DriveAPI.Get(p, "angular")
+                if d:
+                    d.GetTargetPositionAttr().Set(
+                        math.degrees(gripper_finger_target_rad * ratio)
+                    )
+
 except KeyboardInterrupt:
     print("[bridge] interrupted", flush=True)
 finally:
+    try:
+        rclpy.shutdown()
+    except Exception:
+        pass
     simulation_app.close()
