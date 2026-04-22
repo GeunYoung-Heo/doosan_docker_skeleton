@@ -35,6 +35,10 @@ def parse_args():
         default="gripper_finger_target",
         help="ROS 2 topic for gripper finger target (Float64, radians)",
     )
+    parser.add_argument(
+        "--spawn-cubes", action="store_true",
+        help="Spawn three 5cm cubes for the cube-stacking scenario",
+    )
     return parser.parse_args()
 
 ARGS = parse_args()
@@ -124,6 +128,26 @@ if not robot_path:
 print(f"[bridge] articulation root: {robot_path}", flush=True)
 
 # ============================================================
+# 2.5. Enable implicit spring damper on all joints (suppress vibration)
+# ============================================================
+from pxr import Sdf as _Sdf, PhysxSchema  # noqa: E402
+
+_joint_count = 0
+for prim in stage.TraverseAll():
+    if "Joint" in prim.GetTypeName() and "Revolute" in prim.GetTypeName():
+        # Implicit spring damper
+        attr = prim.GetAttribute("physxJoint:implicitSpringDamper")
+        if not attr:
+            attr = prim.CreateAttribute("physxJoint:implicitSpringDamper", _Sdf.ValueTypeNames.Bool)
+        attr.Set(True)
+        # Joint armature
+        physx_joint = PhysxSchema.PhysxJointAPI.Apply(prim)
+        physx_joint.CreateArmatureAttr(0.1)
+        _joint_count += 1
+
+print(f"[bridge] implicitSpringDamper + armature(0.1) on {_joint_count} revolute joints", flush=True)
+
+# ============================================================
 # 3. Set up gripper joint drives (mimic via Python)
 # ============================================================
 GRIPPER_JOINTS = {
@@ -152,12 +176,81 @@ for n in GRIPPER_JOINTS:
         d.CreateTypeAttr("force")
         d.CreateMaxForceAttr(1e10)
         d.CreateStiffnessAttr(1e7)
-        d.CreateDampingAttr(1e4)
+        d.CreateDampingAttr(1e5)
 
 print(f"[bridge] gripper joints: {len(gripper_joint_prims)}/{len(GRIPPER_JOINTS)}", flush=True)
 
+# Apply high-friction physics material to gripper finger collision prims
+from pxr import UsdGeom, Gf, UsdShade, Sdf  # noqa: E402
+
+_grip_mtl = UsdShade.Material.Define(stage, "/World/high_friction_material")
+_grip_phys = UsdPhysics.MaterialAPI.Apply(_grip_mtl.GetPrim())
+_grip_phys.CreateStaticFrictionAttr(2.0)
+_grip_phys.CreateDynamicFrictionAttr(2.0)
+_grip_phys.CreateRestitutionAttr(0.0)
+
+FINGER_COL_PATHS = [
+    "/m1013/right_inner_finger/collisions",
+    "/m1013/left_inner_finger/collisions",
+]
+for fp in FINGER_COL_PATHS:
+    p = stage.GetPrimAtPath(fp)
+    if p.IsValid():
+        p.CreateRelationship("material:binding:physics").SetTargets(
+            [_grip_mtl.GetPath()]
+        )
+        print(f"  [friction] bound to {fp}", flush=True)
+print("[bridge] finger friction material applied", flush=True)
+
 # Shared state for gripper target (will be updated by ROS subscriber or gripper_sim_node)
 gripper_finger_target_rad = 0.0  # 0 = open, 1.18 = closed
+
+
+# ============================================================
+# 3.5. (Optional) Spawn cubes for pick-and-place scenario
+# ============================================================
+if ARGS.spawn_cubes:
+    from pxr import UsdGeom, Gf, UsdShade, Sdf  # noqa: E402
+
+    CUBE_SIZE = 0.05  # 5 cm
+    CUBE_POSITIONS = {
+        "cube1": Gf.Vec3d(-0.45,  0.0, CUBE_SIZE / 2),
+        "cube2": Gf.Vec3d(-0.45, -0.4, CUBE_SIZE / 2),
+        "cube3": Gf.Vec3d(-0.65, -0.2, CUBE_SIZE / 2),
+    }
+    CUBE_COLORS = {
+        "cube1": Gf.Vec3f(0.9, 0.2, 0.2),  # red
+        "cube2": Gf.Vec3f(0.2, 0.7, 0.2),  # green
+        "cube3": Gf.Vec3f(0.2, 0.3, 0.9),  # blue
+    }
+
+    for name, pos in CUBE_POSITIONS.items():
+        cube_path = f"/World/{name}"
+        cube_prim = UsdGeom.Cube.Define(stage, cube_path)
+        cube_prim.CreateSizeAttr(CUBE_SIZE)
+        cube_prim.AddTranslateOp().Set(pos)
+
+        UsdPhysics.RigidBodyAPI.Apply(cube_prim.GetPrim())
+        UsdPhysics.CollisionAPI.Apply(cube_prim.GetPrim())
+        mass_api = UsdPhysics.MassAPI.Apply(cube_prim.GetPrim())
+        mass_api.CreateMassAttr(0.1)  # 100g
+
+        # Bind high-friction physics material
+        cube_prim.GetPrim().CreateRelationship("material:binding:physics").SetTargets(
+            [_grip_mtl.GetPath()]
+        )
+
+        # Visual material (color)
+        mtl_path = f"/World/{name}_material"
+        mtl = UsdShade.Material.Define(stage, mtl_path)
+        shader = UsdShade.Shader.Define(stage, f"{mtl_path}/Shader")
+        shader.CreateIdAttr("UsdPreviewSurface")
+        shader.CreateInput("diffuseColor", Sdf.ValueTypeNames.Color3f).Set(CUBE_COLORS[name])
+        mtl.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
+        UsdShade.MaterialBindingAPI.Apply(cube_prim.GetPrim()).Bind(mtl)
+
+    simulation_app.update()
+    print(f"[bridge] spawned 3 cubes (5cm, 100g): {list(CUBE_POSITIONS.keys())}", flush=True)
 
 # ============================================================
 # 4. Build ROS 2 Action Graph (arm joint_states + clock)
@@ -238,7 +331,7 @@ try:
         # Pump ROS 2 callbacks (gripper target updates)
         rclpy.spin_once(ros_node, timeout_sec=0.0)
 
-        # Apply gripper mimic drives each tick
+        # Apply gripper mimic drives each tick (visual finger animation)
         for name, ratio in GRIPPER_JOINTS.items():
             p = gripper_joint_prims.get(name)
             if p:
@@ -247,6 +340,7 @@ try:
                     d.GetTargetPositionAttr().Set(
                         math.degrees(gripper_finger_target_rad * ratio)
                     )
+
 
 except KeyboardInterrupt:
     print("[bridge] interrupted", flush=True)

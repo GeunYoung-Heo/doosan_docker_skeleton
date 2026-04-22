@@ -218,7 +218,7 @@ def run_scenario(runner: ScenarioRunner):
     # --- Pick cube1 ---
     runner.move_cartesian((-0.45, 0.0, 0.55), label="above cube1")
     runner.move_cartesian((-0.45, 0.0, 0.24), label="grab cube1")
-    runner.set_gripper(0.0, 5.0, settle_sec=2.0, label="grasp cube1")
+    runner.set_gripper(40.0, 5.0, settle_sec=2.0, label="grasp cube1")
 
     # --- Place cube1 on cube2 ---
     runner.move_cartesian((-0.45,  0.0, 0.55), label="lift cube1")
@@ -230,7 +230,7 @@ def run_scenario(runner: ScenarioRunner):
     # --- Pick cube3 ---
     runner.move_cartesian((-0.65, -0.2, 0.55), label="above cube3")
     runner.move_cartesian((-0.65, -0.2, 0.24), label="grab cube3")
-    runner.set_gripper(0.0, 5.0, settle_sec=2.0, label="grasp cube3")
+    runner.set_gripper(40.0, 5.0, settle_sec=2.0, label="grasp cube3")
 
     # --- Place cube3 on top of stack ---
     runner.move_cartesian((-0.65, -0.2, 0.55), label="lift cube3")
