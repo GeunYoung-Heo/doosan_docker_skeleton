@@ -41,5 +41,8 @@ Thumbs.db
 # ---- Experiment protocol (local documentation, not part of the project) ----
 experiment_protocol.md
 
+# ---- Outdated experiments and diagnostics ----
+outdated/
+
 # ---- Claude Code local config (not part of the project) ----
 .claude/
