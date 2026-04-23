@@ -39,6 +39,13 @@ def parse_args():
         "--spawn-cubes", action="store_true",
         help="Spawn three 5cm cubes for the cube-stacking scenario",
     )
+    parser.add_argument(
+        "--scene-usd",
+        default=None,
+        help="Load this USD stage instead of importing URDF + spawning cubes. "
+             "The USD must already contain the robot and all scene objects "
+             "(e.g. produced by the doosan-cap SceneBuilderAPI).",
+    )
     return parser.parse_args()
 
 ARGS = parse_args()
@@ -66,49 +73,77 @@ for _ in range(10):
     simulation_app.update()
 
 # ---- Stage ----
-omni.usd.get_context().new_stage()
-simulation_app.update()
+if ARGS.scene_usd is not None:
+    if not os.path.isfile(ARGS.scene_usd):
+        carb.log_error(f"[bridge] scene USD not found: {ARGS.scene_usd}")
+        simulation_app.close()
+        sys.exit(1)
+    print(f"[bridge] opening scene USD: {ARGS.scene_usd}", flush=True)
+    omni.usd.get_context().open_stage(ARGS.scene_usd)
+    simulation_app.update()
+    world = World(stage_units_in_meters=1.0)
+else:
+    omni.usd.get_context().new_stage()
+    simulation_app.update()
+    world = World(stage_units_in_meters=1.0)
+    world.scene.add_default_ground_plane()
 
-world = World(stage_units_in_meters=1.0)
-world.scene.add_default_ground_plane()
 set_camera_view(eye=[2.0, 2.0, 1.5], target=[0.0, 0.0, 0.5])
 stage = omni.usd.get_context().get_stage()
 
 # ============================================================
-# 1. Import combined URDF (single articulation: arm + gripper)
+# 1. Either use the prim already in the opened USD, or import URDF.
 # ============================================================
-if not os.path.isfile(ARGS.urdf):
-    carb.log_error(f"[bridge] URDF not found: {ARGS.urdf}")
-    simulation_app.close()
-    sys.exit(1)
+if ARGS.scene_usd is not None:
+    # Scene USD already contains the robot (from SceneBuilderAPI.add_doosan).
+    # Physics config (armature, implicitSpringDamper, finger friction) was
+    # applied during scene generation and persists in the USD.
+    # Find the robot prim: look for an articulation root that's /World/*.
+    robot_prim_path = None
+    for prim in stage.TraverseAll():
+        if prim.HasAPI(UsdPhysics.ArticulationRootAPI):
+            path_str = str(prim.GetPath())
+            if path_str.startswith("/World") or path_str.startswith("/m1013"):
+                robot_prim_path = path_str
+                break
+    if robot_prim_path is None:
+        carb.log_error("[bridge] no articulation root found in scene USD")
+        simulation_app.close()
+        sys.exit(1)
+    print(f"[bridge] robot prim in scene USD: {robot_prim_path}", flush=True)
+else:
+    if not os.path.isfile(ARGS.urdf):
+        carb.log_error(f"[bridge] URDF not found: {ARGS.urdf}")
+        simulation_app.close()
+        sys.exit(1)
 
-print(f"[bridge] importing combined URDF: {ARGS.urdf}", flush=True)
-from isaacsim.asset.importer.urdf import _urdf  # noqa: E402
+    print(f"[bridge] importing combined URDF: {ARGS.urdf}", flush=True)
+    from isaacsim.asset.importer.urdf import _urdf  # noqa: E402
 
-cfg = _urdf.ImportConfig()
-cfg.merge_fixed_joints = False
-cfg.convex_decomp = False
-cfg.import_inertia_tensor = True
-cfg.fix_base = True
-cfg.distance_scale = 1.0
-cfg.density = 0.0
-cfg.default_drive_type = _urdf.UrdfJointTargetType.JOINT_DRIVE_POSITION
-cfg.default_drive_strength = 1e7
-cfg.default_position_drive_damping = 1e5
-cfg.self_collision = False
-cfg.create_physics_scene = False
-cfg.make_default_prim = False
+    cfg = _urdf.ImportConfig()
+    cfg.merge_fixed_joints = False
+    cfg.convex_decomp = False
+    cfg.import_inertia_tensor = True
+    cfg.fix_base = True
+    cfg.distance_scale = 1.0
+    cfg.density = 0.0
+    cfg.default_drive_type = _urdf.UrdfJointTargetType.JOINT_DRIVE_POSITION
+    cfg.default_drive_strength = 1e7
+    cfg.default_position_drive_damping = 1e5
+    cfg.self_collision = False
+    cfg.create_physics_scene = False
+    cfg.make_default_prim = False
 
-status, robot_prim_path = omni.kit.commands.execute(
-    "URDFParseAndImportFile", urdf_path=ARGS.urdf, import_config=cfg, dest_path="",
-)
-if not status or not robot_prim_path:
-    carb.log_error(f"[bridge] URDF import failed")
-    simulation_app.close()
-    sys.exit(1)
+    status, robot_prim_path = omni.kit.commands.execute(
+        "URDFParseAndImportFile", urdf_path=ARGS.urdf, import_config=cfg, dest_path="",
+    )
+    if not status or not robot_prim_path:
+        carb.log_error(f"[bridge] URDF import failed")
+        simulation_app.close()
+        sys.exit(1)
 
-print(f"[bridge] imported at: {robot_prim_path}", flush=True)
-simulation_app.update()
+    print(f"[bridge] imported at: {robot_prim_path}", flush=True)
+    simulation_app.update()
 
 # ============================================================
 # 2. Find articulation root for OmniGraph ArticulationController
@@ -209,7 +244,7 @@ gripper_finger_target_rad = 0.0  # 0 = open, 1.18 = closed
 # ============================================================
 # 3.5. (Optional) Spawn cubes for pick-and-place scenario
 # ============================================================
-if ARGS.spawn_cubes:
+if ARGS.spawn_cubes and ARGS.scene_usd is None:
     from pxr import UsdGeom, Gf, UsdShade, Sdf  # noqa: E402
 
     CUBE_SIZE = 0.05  # 5 cm
