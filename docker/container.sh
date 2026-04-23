@@ -21,6 +21,7 @@ DOCKERFILE="${SCRIPT_DIR}/Dockerfile"
 SCRIPTS_HOST="${ROOT}/scripts"
 THIRD_HOST="${ROOT}/third_party"
 ISAAC_HOST="${ROOT}/isaac"
+CAP_HOST="${DOOSAN_CAP_PATH:-${HOME}/doosan-cap}"
 
 CACHE_HOST="${SCRIPT_DIR}/cache"
 BUILD_HOST="${CACHE_HOST}/build"
@@ -73,6 +74,7 @@ create_or_start_container() {
     -v "${SCRIPTS_HOST}:${SRC}:rw" \
     -v "${THIRD_HOST}:${SRC}/third_party:rw" \
     -v "${ISAAC_HOST}:/workspace/isaac:rw" \
+    -v "${CAP_HOST}:/workspace/doosan-cap:rw" \
     -v "${BUILD_HOST}:${WS}/build:rw" \
     -v "${INSTALL_HOST}:${WS}/install:rw" \
     -v "${LOG_HOST}:${WS}/log:rw" \
