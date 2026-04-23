@@ -65,7 +65,7 @@ sed "s|package://dsr_description2/|file://${DESC_DIR}/|g" \
 # Change: quick_changer_joint parent from "world" to "link_6"
 # Change: quick_changer_joint origin to (0, 0, 0) for flush mount
 #   ↑ CUSTOMIZE HERE if you need rotation: e.g. rpy="0 0 1.5708" for 90° yaw
-MOUNT_ORIGIN='<origin rpy="0 0 0" xyz="0 0 0"/>'
+MOUNT_ORIGIN='<origin rpy="0 0 1.5708" xyz="0 0 0"/>'
 
 grep -v '<?xml' ${GRIP_URDF_NO_MIMIC} \
     | grep -v '<robot ' \
