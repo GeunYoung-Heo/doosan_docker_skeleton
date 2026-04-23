@@ -317,7 +317,11 @@ og.Controller.edit(
             ("ReadSimTime.outputs:simulationTime", "PublishJointState.inputs:timeStamp"),
             ("SubscribeJointState.outputs:jointNames", "ArticulationController.inputs:jointNames"),
             ("SubscribeJointState.outputs:positionCommand", "ArticulationController.inputs:positionCommand"),
-            ("SubscribeJointState.outputs:velocityCommand", "ArticulationController.inputs:velocityCommand"),
+            # NOTE: velocityCommand intentionally NOT connected. mock_components
+            # publishes velocity=0 always, which would tell PhysX "target vel=0"
+            # while the arm is actually moving. The damping term then fights the
+            # motion and causes end-effector vibration. Without this connection,
+            # the drive's damping only reacts to measured velocity (as intended).
             ("SubscribeJointState.outputs:effortCommand", "ArticulationController.inputs:effortCommand"),
         ],
         keys.SET_VALUES: [
