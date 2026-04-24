@@ -194,6 +194,12 @@ GRIPPER_JOINTS = {
     "right_inner_knuckle_joint": 1.0,
 }
 
+# Cap the angular velocity of every gripper joint (deg/s).
+# close, which looks natural without blowing past the scenario's
+# settle_sec timeouts. Contact with an object still stops the fingers
+# immediately regardless of this cap, so grasp force is unaffected.
+GRIPPER_MAX_JOINT_VEL_DEG = 15.0
+
 def find_joint(name):
     for p in stage.TraverseAll():
         if p.GetName() == name and "Joint" in p.GetTypeName():
@@ -212,8 +218,12 @@ for n in GRIPPER_JOINTS:
         d.CreateMaxForceAttr(1e10)
         d.CreateStiffnessAttr(1e7)
         d.CreateDampingAttr(1e5)
+        # Slow the gripper's open/close animation to a natural speed.
+        pj = PhysxSchema.PhysxJointAPI.Apply(p)
+        pj.CreateMaxJointVelocityAttr(GRIPPER_MAX_JOINT_VEL_DEG)
 
-print(f"[bridge] gripper joints: {len(gripper_joint_prims)}/{len(GRIPPER_JOINTS)}", flush=True)
+print(f"[bridge] gripper joints: {len(gripper_joint_prims)}/{len(GRIPPER_JOINTS)} "
+      f"(maxVel={GRIPPER_MAX_JOINT_VEL_DEG:.0f} deg/s)", flush=True)
 
 # Apply high-friction physics material to gripper finger collision prims
 from pxr import UsdGeom, Gf, UsdShade, Sdf  # noqa: E402
