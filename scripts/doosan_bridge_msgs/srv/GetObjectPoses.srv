@@ -1,0 +1,10 @@
+# Query the world-frame pose of rigid-body scene objects held by the bridge.
+# If `names` is empty, all /World/* prims with UsdPhysics.RigidBodyAPI are returned
+# (excluding the robot and the ground plane).  Positions are in the robot base
+# frame; orientations are quaternions (w, x, y, z).
+string[] names
+---
+bool                success
+string              message
+string[]            returned_names
+geometry_msgs/Pose[] poses

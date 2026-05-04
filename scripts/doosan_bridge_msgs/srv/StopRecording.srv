@@ -1,0 +1,4 @@
+# Stop the recording started via StartRecording.  Finalises the MP4 files.
+---
+bool   success
+string message

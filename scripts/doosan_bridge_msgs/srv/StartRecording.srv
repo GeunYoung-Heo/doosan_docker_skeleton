@@ -1,0 +1,7 @@
+# Start recording the simulation cameras to MP4 files.
+# Files are named recording_<camera>.mp4 under `output_dir`.
+string output_dir        # absolute path INSIDE the container (e.g. /workspace/doosan-cap/generated_by_LLM/iter_0)
+uint32 fps               # target frame rate for the MP4 files; 0 means pick a reasonable default (e.g. 30)
+---
+bool   success
+string message
