@@ -25,6 +25,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN apt-get update && apt-get install -y --no-install-recommends \
         wget git build-essential cmake \
         libpoco-dev libyaml-cpp-dev dbus-x11 \
+        ffmpeg \
         python3-rosdep python3-colcon-common-extensions \
         liburdfdom-tools \
         ros-${ROS_DISTRO}-ros-base \
